@@ -1,0 +1,72 @@
+#!/usr/bin/env python
+
+import re
+import string
+import sys
+import binascii
+
+
+def encode(obj):
+    if type(obj) == bytes:
+        return str(len(obj)).encode() + b":" + obj
+    elif type(obj) == dict:
+        return b"d%se" % b"".join([encode(k) + encode(v) for k, v in sorted(obj.items())])
+    elif type(obj) == list:
+        return b"l%se" % b"".join(map(encode, obj))
+    elif type(obj) == int:
+        return b"i%ie" % obj
+    raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a "
+                     "dictionary)")
+
+
+def decode(input):
+    if type(input) != bytes:
+        data = open(input, 'rb').read()
+        print(data)
+    else:
+        data = input
+    def torrent_parsing(data):
+        if data.startswith(b"i"):
+            match = re.match(b"i(-?\\d+)e", data)
+            return int(match.group(1)), data[match.span()[1]:]
+        elif data.startswith(b"l") or data.startswith(b"d"):
+            list = []
+            rest_elements = data[1:]
+            while not rest_elements.startswith(b"e"):
+                elem, rest_elements = torrent_parsing(rest_elements)
+                list.append(elem)
+            rest_elements = rest_elements[1:]
+            if data.startswith(b"l"):
+                return list, rest_elements
+            else:
+                return {i: j for i, j in zip(list[::2], list[1::2])}, rest_elements
+        elif any(data.startswith(i.encode()) for i in string.digits):
+            m = re.match(b"(\\d+):", data)
+            length = int(m.group(1))
+            start = m.span()[1]
+            end = m.span()[1] + length
+            return data[start:end], data[end:]
+        else:
+            raise ValueError("Wrong input")
+
+
+    # def pieces(parse):
+    #     data = parse[b'info'][b'pieces']
+    #     pieces = []
+    #     offset = 0
+    #     length = len(data)
+    #     while offset < length:
+    #         pieces.append(binascii.hexlify(data[offset:offset + 20]))
+    #         offset += 20
+    #     return pieces
+    parse, rest = torrent_parsing(input)
+    return parse
+    # print(parse)
+    # return {'Filename': parse[b'info'][b'name'],
+    #         'File length': parse[b'info'][b'length'],
+    #         'Announce URL': parse[b'announce'],
+    #         'Info': parse[b'info'],
+    #         'Length': parse[b'info'][b'length'],
+    #         'Pieces Length': parse[b'info'][b'piece length'],
+    #         'Pieces': pieces(parse)}
+
