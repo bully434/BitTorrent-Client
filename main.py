@@ -41,13 +41,13 @@ def main():
             control.add(torrent_info)
         print('new torrent has been successfully added')
 
-    # control_server = ControlServer(control)
-    # loop.run_until_complete(control_server.start())
+    control_server = ControlServer(control)
+    loop.run_until_complete(control_server.start())
 
     try:
         loop.run_forever()
     except KeyboardInterrupt:
-        stop_task = asyncio.ensure_future(control.stop())
+        stop_task = asyncio.ensure_future(asyncio.wait([control_server.stop(), control.stop()]))
         stop_task.add_done_callback(lambda fut: loop.stop())
         loop.run_forever()
     finally:

@@ -120,9 +120,10 @@ class DownloadInfo:
         self.piece_downloaded.setall(False)
         self.downloaded_piece_count = 0
         self.interesting_pieces = set()
+        self.piece_selected = bitarray.bitarray(piece_count)
+        self.piece_selected.setall(True)
 
-        blocks_count = ceil(piece_length / DownloadInfo.PIECE_SIZE)
-        self.piece_blocks_downloaded = [None] * piece_count * blocks_count
+        self.piece_blocks_downloaded = [None] * piece_count
 
         self.piece_owners = None
         self.piece_validating = None
