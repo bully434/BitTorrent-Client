@@ -10,6 +10,9 @@ from collections import OrderedDict
 from models import Peer, TorrentInfo, grouper
 
 
+def humanize_size(size):
+    return '{:.1f} Mb'.format(size / TrackerGetRequest.BPMb)
+
 class TrackerGetRequest:
     def __init__(self, torrent_info, client_peer_id):
         if re.match(r'https?://', torrent_info.announce_url) is None:
@@ -70,11 +73,11 @@ class TrackerGetRequest:
     BPMb = 2 ** 20
 
     async def announce(self, server_port, event):
-        print('announce {} (uploaded {:.2f} Mb, downloaded {:.2f} Mb, left {:.2f} Mb)'.format(
+        print('announce {} (uploaded {} Mb, downloaded {} Mb, left {} Mb)'.format(
             event,
-            self.download_info.total_uploaded / TrackerGetRequest.BPMb,
-            self.download_info.total_downloaded / TrackerGetRequest.BPMb,
-            self.download_info.bytes_left / TrackerGetRequest.BPMb))
+            humanize_size(self.download_info.uploaded_per_session),
+            humanize_size(self.download_info.downloaded_per_session),
+            humanize_size(self.download_info.bytes_left)))
 
         request_parameters = {
             'info_hash': self.download_info.info_hash,

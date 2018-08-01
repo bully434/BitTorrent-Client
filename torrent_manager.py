@@ -13,6 +13,10 @@ from file_structure import FileStructure
 from tracker_http import TrackerGetRequest
 
 
+def humanize_size(size):
+    return '{:.1f} Mb'.format(size / 2 ** 20)
+
+
 class NotEnoughPeers(RuntimeError):
     pass
 
@@ -42,16 +46,18 @@ class Torrent:
         self.torrent_info = torrent_info
         self.download_info = torrent_info.download_info
         self.download_info.reset_run_state()
+        self.download_info.reset_stats()
         self.peer_id = client_peer_id
         self.server_port = server_port
 
         self.peer_data = {}
         self.client_executors = {}
+        self.tasks = []
         self.request_executors = []
         self.executors_processed_requests = []
-        self.keep_alive_executor = None
-        self.announce_executor = None
-        self.upload_executor = None
+        # self.keep_alive_executor = None
+        # self.announce_executor = None
+        # self.upload_executor = None
 
         self.tracker_client = TrackerGetRequest(self.torrent_info, self.peer_id)
 
@@ -94,25 +100,31 @@ class Torrent:
 
     async def execute_peer_client(self, peer, client, need_connect):
         try:
-            try:
-                if need_connect:
-                    await client.connect(self.download_info, self.file_structure)
-                else:
-                    client.confirm_info_hash(self.download_info, self.file_structure)
-
-                self.peer_data[peer] = PeerData(client, time.time())
-                await client.run()
-            finally:
-                if peer in self.peer_data:
-                    for owners in self.download_info.piece_owners:
-                        if peer in owners:
-                            owners.remove(peer)
-                    del self.peer_data[peer]
-                client.close()
+            if need_connect:
+                await client.connect(self.download_info, self.file_structure)
+            else:
+                client.confirm_info_hash(self.download_info, self.file_structure)
+            self.peer_data[peer] = PeerData(client, time.time())
+            self.download_info.peer_count += 1
+            await client.run()
         except asyncio.CancelledError:
             raise
         except Exception as e:
             print("{} disconnected because of {}".format(peer, repr(e)))
+        finally:
+            if peer in self.peer_data:
+                self.download_info.peer_count -= 1
+                del self.peer_data[peer]
+
+                for owners in self.download_info.piece_owners:
+                    if peer in owners:
+                        owners.remove(peer)
+                if peer in self.download_info.peer_last_download:
+                    del self.download_info.peer_last_downloaded[peer]
+                if peer in self.download_info.peer_last_upload:
+                    del self.download_info.peer_last_upload[peer]
+
+            client.close()
 
     async def execute_keep_alive(self):
         while True:
@@ -550,29 +562,56 @@ class Torrent:
 
             for peer in peers_unchoked_current:
                 self.peer_data[peer].client.am_choking = False
-            print('{} peers unchoked (total uploaded = {:.2f} Mb)'
+            print('{} peers unchoked (total uploaded = {})'
                   .format(len(peers_unchoked_current),
-                          self.download_info.total_uploaded / TrackerGetRequest.BPMb))
+                          humanize_size(self.download_info.total_uploaded)))
 
             await asyncio.sleep(Torrent.CHOKING_TIME)
 
             peers_unchoked_previous = peers_unchoked_current
 
+    SPEED_MEASUREMENT_PERIOD = 10
+    SPEED_UPDATE_TIMEOUT = 2
+
+    async def execute_speed_measure(self):
+        max_queue_length = Torrent.SPEED_MEASUREMENT_PERIOD // Torrent.SPEED_UPDATE_TIMEOUT
+        downloaded_queue = deque()
+        uploaded_queue = deque()
+
+        while True:
+            downloaded_queue.append(self.download_info.downloaded_per_session)
+            uploaded_queue.append(self.download_info.uploaded_per_session)
+
+            if len(downloaded_queue) > 1:
+                periods = (len(downloaded_queue) - 1) * Torrent.SPEED_UPDATE_TIMEOUT
+                downloaded_per_period = downloaded_queue[-1] - downloaded_queue[0]
+                uploaded_per_period = uploaded_queue[-1] - uploaded_queue[0]
+                self.download_info.download_speed = downloaded_per_period / periods
+                self.download_info.upload_speed = uploaded_per_period/ periods
+
+            if len(downloaded_queue) > max_queue_length:
+                downloaded_queue.popleft()
+                uploaded_queue.popleft()
+
+            await asyncio.sleep(Torrent.SPEED_UPDATE_TIMEOUT)
+            return downloaded_queue
+
     async def run(self):
         while not await self.try_to_announce('started'):
             await asyncio.sleep(Torrent.ANNOUNCE_FAILED_SLEEP_TIME)
         self.connect_to_peers(self.tracker_client.peers, False)
-
-        self.keep_alive_executor = asyncio.ensure_future(self.execute_keep_alive())
-        self.announce_executor = asyncio.ensure_future(self.execute_regular_announcement())
-        self.upload_executor = asyncio.ensure_future(self.execute_uploading())
-
+        self.tasks += [
+            asyncio.ensure_future(self.execute_keep_alive()),
+            asyncio.ensure_future(self.execute_regular_announcement()),
+            asyncio.ensure_future(self.execute_uploading()),
+            self.execute_speed_measure()
+        ]
         await self.download()
 
     async def stop(self):
-        executors = (self.request_executors +
-                     [self.upload_executor, self.announce_executor, self.keep_alive_executor] +
-                     list(self.client_executors.values()))
+
+        executors = self.request_executors + self.tasks + list(self.client_executors.values())
+
         executors = [task for task in executors if task is not None]
 
         for task in executors:
@@ -583,9 +622,7 @@ class Torrent:
 
         self.request_executors.clear()
         self.executors_processed_requests.clear()
-        self.upload_executor = None
-        self.announce_executor = None
-        self.keep_alive_executor = None
+        self.tasks.clear()
         self.client_executors.clear()
 
         self.file_structure.close()

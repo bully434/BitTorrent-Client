@@ -235,7 +235,7 @@ class PeerTCP:
             if self.download_info.piece_validating[piece_index] or self.download_info.piece_downloaded[piece_index]:
                 return
             self._downloaded += block_length
-            self.download_info.total_uploaded += block_length
+            self.download_info.add_downloaded(self.peer, block_length)
 
             await self.file_structure.write(piece_index * self.download_info.piece_length + block_begin, block_data,
                                             acquire_lock = False)
@@ -316,7 +316,7 @@ class PeerTCP:
         self.send_message(PeerMessages.piece, struct.pack('!2I', request.piece_index, request.block_begin), block)
 
         self._uploaded += request.block_length
-        self.download_info.total_uploaded += request.block_length
+        self.download_info.add_uploaded(self.peer, request.block_length)
 
     def send_keep_alive(self):
         self.send_message(None)

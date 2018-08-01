@@ -30,7 +30,6 @@ class ControlServer:
         writer.write(length_data)
         writer.write(data)
 
-
     async def accept(self, reader, writer):
         addr_repr = ':'.join((map(str, writer.get_extra_info('peername'))))
         print('accepted connection from {}'.format(addr_repr))

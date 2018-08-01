@@ -1,3 +1,4 @@
+import time
 import random
 import socket
 import struct
@@ -119,7 +120,7 @@ class DownloadInfo:
         self.piece_downloaded = bitarray.bitarray(piece_count, endian='big')
         self.piece_downloaded.setall(False)
         self.downloaded_piece_count = 0
-        self.interesting_pieces = set()
+        self.interesting_pieces = None
         self.piece_selected = bitarray.bitarray(piece_count)
         self.piece_selected.setall(True)
 
@@ -129,9 +130,19 @@ class DownloadInfo:
         self.piece_validating = None
         self.interesting_pieces = None
         self.piece_blocks_expected = None
-        self.total_downloaded = None
-        self.total_uploaded = None
         self.reset_run_state()
+
+        self.peer_count = None
+        self.peer_last_download = {}
+        self.peer_last_upload = {}
+        self.downloaded_per_session = None
+        self.uploaded_per_session = None
+        self.download_speed = None
+        self.upload_speed = None
+        self.reset_stats()
+
+        self.total_downloaded = 0
+        self.total_uploaded = 0
 
     def reset_run_state(self):
         self.piece_owners = [set() for _ in range(self.piece_count)]
@@ -139,8 +150,38 @@ class DownloadInfo:
         self.piece_validating.setall(False)
         self.interesting_pieces = set()
         self.piece_blocks_expected = [set() for _ in range(self.piece_count)]
-        self.total_uploaded = 0
-        self.total_downloaded = 0
+
+    def reset_stats(self):
+        self.peer_count = 0
+        self.downloaded_per_session = 0
+        self.uploaded_per_session = 0
+        self.download_speed = None
+        self.upload_speed = None
+
+    PEER_CONSIDERATION_TIME = 10
+
+    @staticmethod
+    def get_peer_count(time_dict):
+        cur_time = time.time()
+        return sum(1 for t in time_dict.values() if cur_time - t <= DownloadInfo.PEER_CONSIDERATION_TIME)
+
+    @property
+    def downloading_peer_count(self):
+        return DownloadInfo.get_peer_count(self.peer_last_download)
+
+    @property
+    def uploading_peer_count(self):
+        return DownloadInfo.get_peer_count(self.peer_last_upload)
+
+    def add_downloaded(self, peer, size):
+        self.peer_last_download[peer] = time.time()
+        self.downloaded_per_session += size
+        self.total_downloaded += size
+
+    def add_uploaded(self, peer, size):
+        self.peer_last_upload[peer] = time.time()
+        self.uploaded_per_session += size
+        self.total_uploaded += size
 
     @classmethod
     def get_download_info(cls, dictionary):
@@ -160,7 +201,7 @@ class DownloadInfo:
 
     @property
     def is_complete(self):
-        return self.piece_downloaded == self.piece_count
+        return self.piece_downloaded & self.piece_selected == self.piece_selected
 
     @property
     def piece_count(self):
