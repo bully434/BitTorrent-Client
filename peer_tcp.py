@@ -92,7 +92,8 @@ class PeerTCP:
 
     def send_bitfield(self):
         if self.download_info.downloaded_piece_count:
-            self.send_message(PeerMessages.bitfield, self.download_info.piece_downloaded.tobytes())
+            arr = bitarray.bitarray([info.downloaded for info in self.download_info.pieces], endian='big')
+            self.send_message(PeerMessages.bitfield, arr.tobytes())
 
     async def connect(self, download_info, file_structure):
         self._reader, self._writer = await asyncio.wait_for(
@@ -176,7 +177,7 @@ class PeerTCP:
 
     def mark_owner(self, index):
         self.piece_owned[index] = True
-        self.download_info.piece_owners[index].add(self.peer)
+        self.download_info.pieces[index].owners.add(self.peer)
         if index in self.download_info.interesting_pieces:
             self.am_interested = True
 
@@ -199,8 +200,8 @@ class PeerTCP:
             for i in range(piece_count, len(arr)):
                 if arr[i]:
                     raise ValueError('Spare bits in "bitfield" message must be zero')
-        if self.download_info.is_complete and self.is_seed:
-            raise SeedError('Seed disconnection, download complete')
+        # if self.download_info.is_complete and self.is_seed:
+        #     raise SeedError('Seed disconnection, download complete')
 
     async def handle_requests(self, message_id, payload):
         piece_index, begin, length = struct.unpack('!3I', cast(bytes, payload))
@@ -212,7 +213,7 @@ class PeerTCP:
                 raise ValueError('Requested {} bytes, but the current policy allows to accept requests '
                                  'of not more than {} bytes'.format(length, PeerTCP.MAX_REQUEST_LENGTH))
             if (self._am_choking or not self._peer_interested or
-                    not self.download_info.piece_downloaded[piece_index]):
+                    not self.download_info.pieces[piece_index].downloaded):
                 return
             await self._send_block(request)
             await self.drain()
@@ -232,7 +233,8 @@ class PeerTCP:
         if not block_length:
             return
         async with self.file_structure.lock:
-            if self.download_info.piece_validating[piece_index] or self.download_info.piece_downloaded[piece_index]:
+            piece_info = self.download_info.pieces[piece_index]
+            if piece_info.validating or piece_info.downloaded:
                 return
             self._downloaded += block_length
             self.download_info.add_downloaded(self.peer, block_length)
@@ -240,12 +242,10 @@ class PeerTCP:
             await self.file_structure.write(piece_index * self.download_info.piece_length + block_begin, block_data,
                                             acquire_lock = False)
 
-            self.download_info.mark_downloaded_blocks(self.peer, request)
-            self.download_info.piece_sources[piece_index].add(self.peer)
-
-    @property
-    def is_seed(self):
-        return self.piece_owned & self.download_info.piece_selected == self.download_info.piece_selected
+            piece_info.mark_downloaded_blocks(self.peer, request)
+    # @property
+    # def is_seed(self):
+    #     return self.piece_owned & self.download_info.piece_selected == self.download_info.piece_selected
 
     @property
     def am_choking(self):
@@ -325,11 +325,8 @@ class PeerTCP:
         self.send_message(PeerMessages.have, struct.pack('!I', index))
 
     def send_request(self, request, cancel = False):
-        if self.peer not in self.download_info.piece_owners[request.piece_index]:
-            raise ValueError("Peer doesn't have this piece")
-
         if not cancel:
-            assert self.peer in self.download_info.piece_owners[request.piece_index]
+            assert self.peer in self.download_info.pieces[request.piece_index].owners
 
         self.send_message(PeerMessages.request if not cancel else PeerMessages.cancel, struct.pack('!3I', request.piece_index, request.block_begin, request.block_length))
 

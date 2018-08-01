@@ -8,7 +8,7 @@ from functools import partial
 from control_client import ControlClient
 from control_manager import ControlManager
 from control_server import ControlServer
-from models import TorrentInfo
+from models import TorrentInfo, DownloadInfo
 
 DOWNLOAD_DIR = 'downloads'
 STATE_FILE = 'state.bin'
@@ -31,7 +31,7 @@ def format_torrent_info(torrent_info):
 
     if torrent_info.paused:
         state = 'Paused'
-    elif download_info.is_complete:
+    elif download_info.complete:
         state = 'Uploading'
     else:
         state = 'Downloading'

@@ -1,4 +1,5 @@
 import time
+import copy
 import random
 import socket
 import struct
@@ -19,6 +20,75 @@ def grouper(arr, group_size):
 
 def generate_peer_id():
     return bytes(random.randint(0, 255) for _ in range(20))
+
+class PieceInfo:
+    def __init__(self, piece_hash, length):
+        self.piece_hash = piece_hash
+        self.length = length
+
+        self.selected = True
+        self.owners = set()
+        self.validating = False
+
+        self.downloaded = None
+        self.sources = None
+        self.block_downloaded = None
+        self.blocks_expected = None
+        self.reset_content()
+
+    def reset_content(self):
+        self.downloaded = False
+        self.sources = set()
+
+        self.block_downloaded = None
+        self.blocks_expected = set()
+
+    def reset_run_state(self):
+        self.owners = set()
+        self.validating = False
+        self.blocks_expected = set()
+
+    def mark_downloaded_blocks(self, source, request):
+        if self.downloaded:
+            raise ValueError('Piece Already Downloaded')
+        self.sources.add(source)
+
+        arr = self.block_downloaded
+        if arr is None:
+            arr = bitarray.bitarray(ceil(self.length / DownloadInfo.PIECE_SIZE))
+            arr.setall(False)
+            self.block_downloaded = arr
+
+        mark_begin = ceil(request.block_begin / DownloadInfo.PIECE_SIZE)
+        if request.block_begin + request.block_length == self.length:
+            mark_end = len(arr)
+        else:
+            mark_end = (request.block_begin + request.block_length) // DownloadInfo.PIECE_SIZE
+        arr[mark_begin:mark_end] = True
+
+        blocks_expected = self.blocks_expected
+        downloaded = []
+
+        for future in blocks_expected:
+            query_begin = future.block_begin // DownloadInfo.PIECE_SIZE
+            query_end = ceil((future.block_begin + future.block_length) / DownloadInfo.PIECE_SIZE)
+            if arr[query_begin:query_end].all():
+                downloaded.append(future)
+                future.set_result(source)
+        for future in downloaded:
+            blocks_expected.remove(future)
+
+    def are_all_blocks_downloaded(self):
+        return self.downloaded or(self.block_downloaded is not None and self.block_downloaded.all())
+
+    def mark_as_downloaded(self):
+        if self.downloaded:
+            raise ValueError('Piece is already downloaded')
+        self.downloaded = True
+
+        self.sources = None
+        self.block_downloaded = None
+        self.blocks_expected = None
 
 
 class BlockRequest:
@@ -46,6 +116,7 @@ class BlockRequestFuture(asyncio.Future, BlockRequest):
 
     __eq__ = asyncio.Future.__eq__
     __hash__ = asyncio.Future.__hash__
+
 
 class Peer:
     def __init__(self, host, port, peer_id=None):
@@ -107,30 +178,21 @@ class DownloadInfo:
     def __init__(self, info_hash, piece_length, piece_hashes, suggested_name, files, private=False):
         self.info_hash = info_hash
         self.piece_length = piece_length
-        self.piece_hashes = piece_hashes
         self.suggested_name = suggested_name
         self.files = files
         self.private = private
         self.host_distrust_rates = {}
 
+        self.pieces = [PieceInfo(item, piece_length) for item in piece_hashes[:-1]]
+        last_piece_length = self.total_size - (len(piece_hashes ) -1) * self.piece_length
+        self.pieces.append(PieceInfo(piece_hashes[-1], last_piece_length))
+
         piece_count = len(piece_hashes)
         if ceil(self.total_size / piece_length) != piece_count:
             raise ValueError('Invalid count of hashes')
-        self.piece_sources = [set() for _ in range(piece_count)]
-        self.piece_downloaded = bitarray.bitarray(piece_count, endian='big')
-        self.piece_downloaded.setall(False)
         self.downloaded_piece_count = 0
         self.interesting_pieces = None
-        self.piece_selected = bitarray.bitarray(piece_count)
-        self.piece_selected.setall(True)
-
-        self.piece_blocks_downloaded = [None] * piece_count
-
-        self.piece_owners = None
-        self.piece_validating = None
-        self.interesting_pieces = None
-        self.piece_blocks_expected = None
-        self.reset_run_state()
+        self._complete = False
 
         self.peer_count = None
         self.peer_last_download = {}
@@ -145,11 +207,10 @@ class DownloadInfo:
         self.total_uploaded = 0
 
     def reset_run_state(self):
-        self.piece_owners = [set() for _ in range(self.piece_count)]
-        self.piece_validating = bitarray.bitarray(self.piece_count)
-        self.piece_validating.setall(False)
+        self.pieces = [copy.copy(info) for info in self.pieces]
+        for info in self.pieces:
+            info.reset_run_state()
         self.interesting_pieces = set()
-        self.piece_blocks_expected = [set() for _ in range(self.piece_count)]
 
     def reset_stats(self):
         self.peer_count = 0
@@ -200,19 +261,15 @@ class DownloadInfo:
                    dictionary[b'name'].decode(), files, private=dictionary.get('private', False))
 
     @property
-    def is_complete(self):
-        return self.piece_downloaded & self.piece_selected == self.piece_selected
-
-    @property
     def piece_count(self):
-        return len(self.piece_hashes)
+        return len(self.pieces)
 
     @property
     def bytes_left(self):
         result = (self.piece_count - self.downloaded_piece_count) * self.piece_length
         last_index = self.piece_count - 1
-        if not self.piece_downloaded[last_index]:
-            result += self.get_piece_length(last_index) - self.piece_length
+        if not self.pieces[last_index].downloaded:
+            result += self.pieces[last_index].length - self.piece_length
         return result
 
     @property
@@ -225,58 +282,15 @@ class DownloadInfo:
         else:
             return self.piece_length
 
-    def reset_piece(self, index):
-        self.piece_downloaded[index] = False
-        self.piece_sources[index] = set()
-        self.piece_blocks_downloaded[index] = None
-        self.piece_blocks_expected[index] = set()
+    @property
+    def complete(self):
+        return self._complete
 
-    def mark_piece_downloaded(self, index):
-        if self.piece_downloaded[index]:
-            raise ValueError('The piece is already downloaded')
-
-        self.piece_downloaded[index] = True
-        self.downloaded_piece_count += 1
-
-        # Delete data structures for this piece to save memory
-        self.piece_sources[index] = None
-        self.piece_blocks_downloaded[index] = None
-        self.piece_blocks_expected[index] = None
-
-    def is_all_piece_blocks_downloaded(self, index):
-        if self.piece_downloaded[index]:
-            raise ValueError('Piece was marked as downloaded')
-        return self.piece_blocks_downloaded is not None and self.piece_blocks_expected[index].all()
-
-    def mark_downloaded_blocks(self, source, request):
-        if self.piece_downloaded[request.piece_index]:
-            raise ValueError('Piece Already Downloaded')
-        piece_length = self.get_piece_length(request.piece_index)
-
-        arr = self.piece_blocks_downloaded[request.piece_index]
-        if arr is None:
-            arr = bitarray.bitarray(ceil(piece_length / DownloadInfo.PIECE_SIZE))
-            arr.setall(False)
-            self.piece_blocks_downloaded[request.piece_index] = arr
-
-        mark_begin = ceil(request.block_begin / DownloadInfo.PIECE_SIZE)
-        if request.block_begin + request.block_length == piece_length:
-            mark_end = len(arr)
-        else:
-            mark_end = (request.block_begin + request.block_length) // DownloadInfo.PIECE_SIZE
-        arr[mark_begin:mark_end] = True
-
-        blocks_expected = self.piece_blocks_expected[request.piece_index]
-        downloaded = []
-
-        for future in blocks_expected:
-            query_begin = future.block_begin // DownloadInfo.PIECE_SIZE
-            query_end = ceil((future.block_begin + future.block_length) / DownloadInfo.PIECE_SIZE)
-            if arr[query_begin:query_end].all():
-                downloaded.append(future)
-                future.set_result(source)
-        for future in downloaded:
-            blocks_expected.remove(future)
+    @complete.setter
+    def complete(self, value):
+        if value:
+            assert all(info.downloaded or not info.selected for info in self.pieces)
+        self.complete = value
 
     def increase_distrust(self, peer):
         self.host_distrust_rates[peer.host] = self.host_distrust_rates.get(peer.host, 0) + 1

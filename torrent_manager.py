@@ -8,7 +8,7 @@ from math import ceil
 from typing import cast
 from peer_tcp import PeerTCP, SeedError
 from collections import deque, OrderedDict
-from models import Peer, TorrentInfo, BlockRequestFuture
+from models import Peer, DownloadInfo, TorrentInfo, BlockRequestFuture
 from file_structure import FileStructure
 from tracker_http import TrackerGetRequest
 
@@ -116,11 +116,11 @@ class Torrent:
                 self.download_info.peer_count -= 1
                 del self.peer_data[peer]
 
-                for owners in self.download_info.piece_owners:
-                    if peer in owners:
-                        owners.remove(peer)
+                for info in self.download_info.pieces:
+                    if peer in info.owners:
+                        info.owners.remove(peer)
                 if peer in self.download_info.peer_last_download:
-                    del self.download_info.peer_last_downloaded[peer]
+                    del self.download_info.peer_last_download[peer]
                 if peer in self.download_info.peer_last_upload:
                     del self.download_info.peer_last_upload[peer]
 
@@ -158,7 +158,7 @@ class Torrent:
         data = self.peer_data[peer]
 
         rate = data.client.downloaded
-        if self.download_info.is_complete:
+        if self.download_info.complete:
             rate += data.client.upliaded
         rate += random.randint(1, 100)
 
@@ -182,12 +182,11 @@ class Torrent:
                 self.peer_data[peer].client.send_request(request, cancel=True)
 
     async def download_piece_start(self, index):
-        piece_length = self.download_info.get_piece_length(index)
-
-        expected_blocks = self.download_info.piece_blocks_expected[index]
+        piece_info = self.download_info.pieces[index]
+        expected_blocks = piece_info.blocks_expected
         request_deque = deque()
-        for block_begin in range(0, piece_length, Torrent.REQUEST_LENGTH):
-            block_end = min(block_begin + Torrent.REQUEST_LENGTH, piece_length)
+        for block_begin in range(0, piece_info.length, Torrent.REQUEST_LENGTH):
+            block_end = min(block_begin + Torrent.REQUEST_LENGTH, piece_info.length)
             block_length = block_end - block_begin
             request = BlockRequestFuture(index, block_begin, block_length)
             request.add_done_callback(self.send_cancels)
@@ -197,8 +196,7 @@ class Torrent:
         self.piece_block_queue[index] = request_deque
 
         self.download_info.interesting_pieces.add(index)
-        piece_owners = self.download_info.piece_owners[index]
-        for peer in piece_owners:
+        for peer in piece_info.owners:
             self.peer_data[peer].client.am_interested = True
 
         # choking_owners = [peer for peer in piece_owners if self.peer_clients[peer].peer_choking]
@@ -214,30 +212,32 @@ class Torrent:
         #     await asyncio.sleep(0.5)
         concurrent_peers_count = sum(1 for peer, data in self.peer_data.items() if data.queue_size)
         print('piece {} started (owned by {} peers, running {} peers)'
-              .format(index, len(piece_owners),
+              .format(index, len(piece_info.owners),
                       concurrent_peers_count))
 
     async def download_piece_validate(self, index):
+        piece_info = self.download_info.pieces[index]
+        assert piece_info.are_all_blocks_downloaded()
         piece_offset, piece_length = self.get_piece_position(index)
         data = await self.file_structure.read(piece_offset, piece_length)
         hash = hashlib.sha1(data).digest()
-        if hash == self.download_info.piece_hashes[index]:
+        if hash == piece_info.piece_hash:
             await self.flush_piece(index)
             self.download_piece_finish(index)
             return
-        for peer in self.download_info.piece_source[index]:
+        for peer in piece_info.sources:
             self.download_info.increase_distust(peer)
             if self.download_info.is_banned(peer):
                 print('Host {} banned'.format(peer.host))
                 self.client_executors[peer].cancel()
-        self.download_info.reset_piece(index)
+        piece_info.reset_content()
         self.download_piece_start(index)
         print('piece {} is not valid, retrying'.format(index))
 
     def request_piece_blocks(self, count, index):
         if not count:
             return
-
+        piece_info = self.download_info.pieces[index]
         request_deque = self.piece_block_queue[index]
         performer = None
         performer_data = None
@@ -248,7 +248,7 @@ class Torrent:
                 request_deque.popleft()
                 continue
             if performer is None or not performer_data.is_free():
-                available_peers = {peer for peer in self.download_info.piece_owners[index]
+                available_peers = {peer for peer in piece_info.owners
                                    if self.peer_data[peer].is_available()}
                 if not available_peers:
                     return
@@ -272,13 +272,13 @@ class Torrent:
         if not appropriate_peers:
             return None
 
-        piece_owners = self.download_info.piece_owners
+        pieces = self.download_info.pieces
         available_pieces = [index for index in self.not_started_pieces
-                            if appropriate_peers & piece_owners[index]]
+                            if appropriate_peers & pieces[index].owners]
         if not available_pieces:
             return None
 
-        available_pieces.sort(key=lambda index: len(piece_owners[index]))
+        available_pieces.sort(key=lambda index: len(pieces[index].owners))
         piece_count_for_selection = min(len(available_pieces), Torrent.PIECE_COUNT_FOR_SELECTION)
         return available_pieces[random.randint(0, piece_count_for_selection - 1)]
 
@@ -315,11 +315,18 @@ class Torrent:
             raise NotEnoughPeers('No peers to perform')
         return result
 
+    def get_not_finished_pieces(self):
+        pieces = self.download_info.pieces
+        return [i for i in range(self.download_info.piece_count)
+                if pieces[i].selected and not pieces[i].downloaded]
+
     def download_piece_finish(self, index):
-        self.download_info.mark_piece_downloaded(index)
+        piece_info = self.download_info.pieces[index]
+        piece_info.mark_as_downloaded()
+        self.download_info.downloaded_piece_count += 1
 
         self.download_info.interesting_pieces.remove(index)
-        for peer in self.download_info.piece_owners[index]:
+        for peer in piece_info.owners:
             client = self.peer_data[peer].client
             for index in self.download_info.interesting_pieces:
                 if client.piece_owned[index]:
@@ -329,10 +336,12 @@ class Torrent:
         for data in self.peer_data.values():
             data.client.send_have(index)
         print('piece {} finished'.format(index))
-        progress = self.download_info.downloaded_piece_count / len(self.pieces_to_download)
+        selected_piece_count = sum(1 for info in self.download_info.pieces if info.selected)
+
+        progress = self.download_info.downloaded_piece_count / selected_piece_count
         print('progress {:.1%} ({} / {} pieces)'.format(progress,
                                                         self.download_info.downloaded_piece_count,
-                                                        len(self.pieces_to_download)))
+                                                        selected_piece_count))
 
     DOWNLOAD_PEER_ACTIVE = 2
 
@@ -387,18 +396,18 @@ class Torrent:
                                                                  timeout=request_timeout)
 
             if len(requests_pending) < len(processed_requests):
-                piece_validating = self.download_info.piece_validating
+                pieces = self.download_info.pieces
                 for request in requests_done:
                     if request.performer in self.peer_data:
                         self.peer_data[request.performer].queue_size -= 1
 
-                    piece_index = request.piece_index
-                    if not piece_validating[piece_index] and \
-                            not self.download_info.piece_downloaded[piece_index] and \
-                            not self.download_info.piece_blocks_expected[piece_index]:
-                        piece_validating[piece_index] = True
+                    piece_info = pieces[request.piece_index]
+                    if not piece_info.validating and \
+                            not piece_info.downloaded and \
+                            not piece_info.blocks_expected:
+                        piece_info.validating = True
                         await self.download_piece_validate(request.piece_index)
-                        piece_validating[piece_index] = False
+                        piece_info.validating = False
                 processed_requests.clear()
                 processed_requests += list(requests_pending)
             else:
@@ -438,7 +447,8 @@ class Torrent:
                 self.execute_peer_client(peer, client, need_connect=True))
 
     def accept_client(self, peer, client):
-        if len(self.peer_data) > Torrent.MAX_ACCEPT_PEERS:
+        if len(self.peer_data) > Torrent.MAX_ACCEPT_PEERS or self.download_info.is_banned(peer) or \
+                peer in self.peer_data:
             client.close()
             return
         print('accepted connection from {}'.format(peer))
@@ -482,14 +492,11 @@ class Torrent:
         return self.download_info.downloaded_piece_count == len(self.pieces_to_download)
 
     async def download(self, pieces=None):
+        self.not_started_pieces = self.get_not_finished_pieces()
         self.download_start_time = time.time()
-        if pieces is None:
-            pieces = range(self.download_info.piece_count)
-        self.pieces_to_download = pieces
-        self.not_started_pieces = [index for index in self.pieces_to_download
-                                   if not self.download_info.piece_downloaded[index]]
 
         if not self.not_started_pieces:
+            self.download_info.complete = True
             return
 
         random.shuffle(self.not_started_pieces)
@@ -501,12 +508,12 @@ class Torrent:
 
         await asyncio.wait(self.request_executors)
 
-        assert self.download_info.is_complete()
+        self.download_info.complete = True
         await self.try_to_announce('completed')
         print('download complete')
-        for peer, data in self.peer_data.items():
-            if data.client.is_seed():
-                self.client_executors[peer].cancel()
+        # for peer, data in self.peer_data.items():
+        #     if data.client.is_seed():
+        #         self.client_executors[peer].cancel()
 
     CHOKING_TIME = 10
     UPLOAD_PEER_COUNT = 4
@@ -600,12 +607,12 @@ class Torrent:
         while not await self.try_to_announce('started'):
             await asyncio.sleep(Torrent.ANNOUNCE_FAILED_SLEEP_TIME)
         self.connect_to_peers(self.tracker_client.peers, False)
-        self.tasks += [
-            asyncio.ensure_future(self.execute_keep_alive()),
-            asyncio.ensure_future(self.execute_regular_announcement()),
-            asyncio.ensure_future(self.execute_uploading()),
+        self.tasks += [asyncio.ensure_future(coro) for coro in[
+            self.execute_keep_alive(),
+            self.execute_regular_announcement(),
+            self.execute_uploading(),
             self.execute_speed_measure()
-        ]
+        ]]
         await self.download()
 
     async def stop(self):
