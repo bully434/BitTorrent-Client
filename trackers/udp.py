@@ -52,6 +52,10 @@ class DatagramReaderProtocol:
         self._buffer.extend(data)
         self._wakeup_waiter()
 
+    def error_received(self, exc):
+        self._exception = exc
+        self._wakeup_waiter()
+
     def connection_lost(self, exc):
         self._connection_lost = True
         self._exception = exc
@@ -66,6 +70,7 @@ class ActionType(Enum):
 
 
 def pack(*data):
+    assert len(data) % 2 == 0
     format = '!' + ''.join(fmt for fmt in data[::2])
     values = [e for e in data[1::2]]
     return struct.pack(format, *values)
@@ -74,7 +79,7 @@ def pack(*data):
 class UDPTracker(BaseTrackerClient):
     BPMb = 2 ** 20
 
-    def __init(self, url, download_info, client_peer_id, loop=None):
+    def __init__(self, url, download_info, client_peer_id, *, loop=None):
         super().__init__(download_info, client_peer_id)
         if url.scheme != 'udp':
             raise ValueError('UDPTracker expected UDP protocol')
@@ -86,11 +91,13 @@ class UDPTracker(BaseTrackerClient):
         self.key = random.randint(0, 2**32-1)
         # Source: https://wiki.theory.org/BitTorrentSpecification#Tracker_Request_Parameters
 
+    REQUEST_TIMEOUT = 12
     CONNECTION_ID = 0x41727101980
     RESPONSE_HEADER_FORMAT = '!II'
     RESPONSE_HEADER_LEN = struct.calcsize(RESPONSE_HEADER_FORMAT)
 
-    def check_response(self, response, expected_id, expected_action):
+    @staticmethod
+    def check_response(response, expected_id, expected_action):
         action, transaction_id = struct.unpack_from(UDPTracker.RESPONSE_HEADER_FORMAT, response)
 
         if transaction_id != expected_id:
@@ -104,56 +111,47 @@ class UDPTracker(BaseTrackerClient):
             raise ValueError('Unexpected action ID (exp {} real {})'.format(expected_action.name, action.name))
 
     async def announce(self, server_port, event):
-        # print('announce {} (uploaded {} Mb, downloaded {} Mb, left {} Mb)'.format(
-        #     event.name,
-        #     humanize_size(self.statistics.uploaded_per_session),
-        #     humanize_size(self.statistics.downloaded_per_session),
-        #     humanize_size(self.download_info.bytes_left)))
-
         transport, protocol = await self.loop.create_datagram_endpoint(
             DatagramReaderProtocol, remote_addr=(self.host, self.port))
+        try:
+            transaction_id = random.randint(0, 2**32-1)
+            request = pack(
+                'Q', UDPTracker.CONNECTION_ID,
+                'I', ActionType.connect.value,
+                'I', transaction_id,
+            )
+            transport.sendto(request)
+            response = await protocol.recv()
 
-        transaction_id = random.randint(0, 2**32-1)
-        request = pack(
-            'Q', UDPTracker.CONNECTION_ID,
-            'I', ActionType.connect.value,
-            'I', transaction_id,
-        )
-        transport.sendto(request)
-        response = await protocol.recv()
-        self.check_response(response, transaction_id, ActionType.connect)
-        (conn_id,) = struct.unpack_from('!Q', response, UDPTracker.RESPONSE_HEADER_LEN)
-        request = pack(
-            'Q', conn_id,
-            'I', ActionType.action,
-            'I', transaction_id,
-            '20s', self.download_info.info_hash,
-            '20s', self.peer_id,
-            'Q', self.statistics.total_downloaded,
-            'Q', self.download_info.bytes_left,
-            'Q', self.statistics.total_uploaded,
-            'I', event.value,
-            'I', 0,
-            'I', self.key,
-            'i', -1,
-            'H', server_port,
-        )
-        transport.sendto(request)
+            UDPTracker.check_response(response, transaction_id, ActionType.connect)
+            (conn_id,) = struct.unpack_from('!Q', response, UDPTracker.RESPONSE_HEADER_LEN)
+            request = pack(
+                'Q', conn_id,
+                'I', ActionType.announce.value,
+                'I', transaction_id,
+                '20s', self.download_info.info_hash,
+                '20s', self.peer_id,
+                'Q', self.statistics.total_downloaded,
+                'Q', self.download_info.bytes_left,
+                'Q', self.statistics.total_uploaded,
+                'I', event.value,
+                'I', 0,
+                'I', self.key,
+                'i', -1,
+                'H', server_port,
+            )
+            transport.sendto(request)
 
-        response = await protocol.recv()
-
-        self.check_response(response, transaction_id, ActionType.announce)
-        format = '!3I'
-        self.interval, self.leechers, self.seeders = struct.unpack_from(
-            format, response, UDPTracker.RESPONSE_HEADER_LEN
-        )
-        self.min_interval = self.interval
-        compact_peer_list = response[UDPTracker.RESPONSE_HEADER_LEN + struct.calcsize(format):]
-        self.peers = parse_compact_list(compact_peer_list)
-
-        transport.close()
-        # print('{} peers, interval = {}, min interval = {}'.format(
-        #     len(self.peers), self.interval, self.min_interval
-        # ))
+            response = await asyncio.wait_for(protocol.recv(), UDPTracker.REQUEST_TIMEOUT)
+            UDPTracker.check_response(response, transaction_id, ActionType.announce)
+            format = '!3I'
+            self.interval, self.leechers, self.seeders = struct.unpack_from(
+                format, response, UDPTracker.RESPONSE_HEADER_LEN
+            )
+            self.min_interval = self.interval
+            compact_peer_list = response[UDPTracker.RESPONSE_HEADER_LEN + struct.calcsize(format):]
+            self.peers = parse_compact_list(compact_peer_list)
+        finally:
+            transport.close()
 
 

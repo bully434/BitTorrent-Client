@@ -97,6 +97,7 @@ class ControlManager:
         print('state recovered ({} torrents)'.format(len(torrent_list)))
 
     async def stop(self):
+        await self.server.stop()
         for task in self.torrent_managers_executors.values():
             task.cancel()
         if self.torrent_managers_executors:
@@ -104,4 +105,3 @@ class ControlManager:
 
         if self.torrent_managers:
             await asyncio.wait([manager.stop() for manager in self.torrent_managers.values()])
-        await self.server.stop()
