@@ -156,7 +156,7 @@ class Peer:
 
 
 class FileInfo:
-    def __init__(self, length, path, md5sum=None):
+    def __init__(self, length, path, *, md5sum=None):
         self.length = length
         self.path = path
         self.md5sum = md5sum
@@ -171,6 +171,49 @@ class FileInfo:
         return self(dictionary[b'length'], path, md5sum=dictionary.get(b'md5sum'))
 
 
+class SessionStat:
+    def __init__(self, previous_stats):
+        self.peer_count = 0
+        self.peer_last_download = {}
+        self.peer_last_upload = {}
+        self.downloaded_per_session = 0
+        self.uploaded_per_session = 0
+        self.download_speed = None
+        self.upload_speed = None
+
+        if previous_stats is not None:
+            self.total_downloaded = previous_stats.total_downloaded
+            self.total_uploaded = previous_stats.total_uploaded
+        else:
+            self.total_downloaded = 0
+            self.total_uploaded = 0
+
+    PEER_CONSIDERATION_TIME = 10
+
+    @staticmethod
+    def get_peer_count(time_dict):
+        cur_time = time.time()
+        return sum(1 for t in time_dict.values() if cur_time - t <= DownloadInfo.PEER_CONSIDERATION_TIME)
+
+    @property
+    def downloading_peer_count(self):
+        return SessionStat.get_peer_count(self.peer_last_download)
+
+    @property
+    def uploading_peer_count(self):
+        return SessionStat.get_peer_count(self.peer_last_upload)
+
+    def add_downloaded(self, peer, size):
+        self.peer_last_download[peer] = time.time()
+        self.downloaded_per_session += size
+        self.total_downloaded += size
+
+    def add_uploaded(self, peer, size):
+        self.peer_last_upload[peer] = time.time()
+        self.uploaded_per_session += size
+        self.total_uploaded += size
+
+
 class DownloadInfo:
     PIECE_SIZE = 2 ** 10
     DISTRUST_RATE_TO_BAN = 5
@@ -179,6 +222,7 @@ class DownloadInfo:
         self.info_hash = info_hash
         self.piece_length = piece_length
         self.suggested_name = suggested_name
+        self.session_stats = SessionStat(None)
         self.files = files
         self.private = private
         self.host_distrust_rates = {}
@@ -194,18 +238,6 @@ class DownloadInfo:
         self.interesting_pieces = None
         self._complete = False
 
-        self.peer_count = None
-        self.peer_last_download = {}
-        self.peer_last_upload = {}
-        self.downloaded_per_session = None
-        self.uploaded_per_session = None
-        self.download_speed = None
-        self.upload_speed = None
-        self.reset_stats()
-
-        self.total_downloaded = 0
-        self.total_uploaded = 0
-
     def reset_run_state(self):
         self.pieces = [copy.copy(info) for info in self.pieces]
         for info in self.pieces:
@@ -213,36 +245,9 @@ class DownloadInfo:
         self.interesting_pieces = set()
 
     def reset_stats(self):
-        self.peer_count = 0
-        self.downloaded_per_session = 0
-        self.uploaded_per_session = 0
-        self.download_speed = None
-        self.upload_speed = None
+        self.session_stats = SessionStat(None)
 
     PEER_CONSIDERATION_TIME = 10
-
-    @staticmethod
-    def get_peer_count(time_dict):
-        cur_time = time.time()
-        return sum(1 for t in time_dict.values() if cur_time - t <= DownloadInfo.PEER_CONSIDERATION_TIME)
-
-    @property
-    def downloading_peer_count(self):
-        return DownloadInfo.get_peer_count(self.peer_last_download)
-
-    @property
-    def uploading_peer_count(self):
-        return DownloadInfo.get_peer_count(self.peer_last_upload)
-
-    def add_downloaded(self, peer, size):
-        self.peer_last_download[peer] = time.time()
-        self.downloaded_per_session += size
-        self.total_downloaded += size
-
-    def add_uploaded(self, peer, size):
-        self.peer_last_upload[peer] = time.time()
-        self.uploaded_per_session += size
-        self.total_uploaded += size
 
     @classmethod
     def get_download_info(cls, dictionary):
@@ -301,9 +306,9 @@ class DownloadInfo:
 
 
 class TorrentInfo:
-    def __init__(self, download_info, announce_url, *, download_dir):
+    def __init__(self, download_info, announce_list, *, download_dir):
         self.download_info = download_info
-        self.announce_url = announce_url
+        self.announce_list = announce_list
         self.download_dir = download_dir
         self.paused = False
 
@@ -311,6 +316,11 @@ class TorrentInfo:
     def get_info(self, file, **kwargs):
         dictionary = cast(OrderedDict, bencoder.decode(file))
         download_info = DownloadInfo.get_download_info(dictionary[b'info'])
-        announce = dictionary[b'announce'].decode()
-        return self(download_info, announce, **kwargs)
+        if b'announce-list' in dictionary:
+            announce_list = [[url.decode() for url in tier]
+                             for tier in dictionary[b'announce-list']]
+        else:
+            announce_list = [[dictionary[b'announce'].decode()]]
+
+        return self(download_info, announce_list, **kwargs)
 

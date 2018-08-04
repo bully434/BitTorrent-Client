@@ -21,6 +21,7 @@ class TrackerGetRequest:
         self.torrent_info = torrent_info
         self.download_info = torrent_info.download_info
         self.peer_id = client_peer_id
+        self.statistics = self.download_info.session_stats
 
         self.interval = None
         self.min_interval = None
@@ -75,16 +76,16 @@ class TrackerGetRequest:
     async def announce(self, server_port, event):
         print('announce {} (uploaded {} Mb, downloaded {} Mb, left {} Mb)'.format(
             event,
-            humanize_size(self.download_info.uploaded_per_session),
-            humanize_size(self.download_info.downloaded_per_session),
+            humanize_size(self.statistics.uploaded_per_session),
+            humanize_size(self.statistics.downloaded_per_session),
             humanize_size(self.download_info.bytes_left)))
 
         request_parameters = {
             'info_hash': self.download_info.info_hash,
             'peer_id': self.peer_id,
             'port': server_port,
-            'uploaded': self.download_info.total_uploaded,
-            'downloaded': self.download_info.total_downloaded,
+            'uploaded': self.statistics.total_uploaded,
+            'downloaded': self.statistics.total_downloaded,
             'left': self.download_info.bytes_left,
             'event': event,
             'compact': 1,

@@ -10,7 +10,7 @@ from peer_tcp import PeerTCP, SeedError
 from collections import deque, OrderedDict
 from models import Peer, DownloadInfo, TorrentInfo, BlockRequestFuture
 from file_structure import FileStructure
-from tracker_http import TrackerGetRequest
+from trackers import create_tracker_client, EventType
 
 
 def humanize_size(size):
@@ -47,6 +47,8 @@ class Torrent:
         self.download_info = torrent_info.download_info
         self.download_info.reset_run_state()
         self.download_info.reset_stats()
+        self.statistics = self.download_info.session_stats
+
         self.peer_id = client_peer_id
         self.server_port = server_port
 
@@ -59,7 +61,7 @@ class Torrent:
         # self.announce_executor = None
         # self.upload_executor = None
 
-        self.tracker_client = TrackerGetRequest(self.torrent_info, self.peer_id)
+        self.last_tracker_client = None
 
         self.pieces_to_download = None
         self.not_started_pieces = None
@@ -71,6 +73,7 @@ class Torrent:
 
         self.tasks_waiting_for_peers = 0
         self.more_peers_requested = asyncio.Event()
+        self.last_reconnect_time = 0
         self.request_deque_relevant = asyncio.Event()
 
         self.file_structure = FileStructure(torrent_info.download_dir, torrent_info.download_info)
@@ -88,13 +91,14 @@ class Torrent:
 
     REQUEST_TIMEOUT = 6
     REQUEST_TIMEOUT_ENDGAME = 1
+    RECONNECT_TIMEOUT = 50
 
     MAX_CONNECT_PEERS = 30
     MAX_ACCEPT_PEERS = 55
     START_DURATION = 5
     NO_PEER_SLEEP_TIME_START = 1
 
-    MIN_INTERVAL = 30
+    MIN_INTERVAL = 90
     KEEP_ALIVE_TIMEOUT = 2 * 60
     FAKE_SERVER_PORT = 6881
 
@@ -105,7 +109,7 @@ class Torrent:
             else:
                 client.confirm_info_hash(self.download_info, self.file_structure)
             self.peer_data[peer] = PeerData(client, time.time())
-            self.download_info.peer_count += 1
+            self.statistics.peer_count += 1
             await client.run()
         except asyncio.CancelledError:
             raise
@@ -113,18 +117,20 @@ class Torrent:
             print("{} disconnected because of {}".format(peer, repr(e)))
         finally:
             if peer in self.peer_data:
-                self.download_info.peer_count -= 1
+                self.statistics.peer_count -= 1
                 del self.peer_data[peer]
 
                 for info in self.download_info.pieces:
                     if peer in info.owners:
                         info.owners.remove(peer)
-                if peer in self.download_info.peer_last_download:
-                    del self.download_info.peer_last_download[peer]
-                if peer in self.download_info.peer_last_upload:
-                    del self.download_info.peer_last_upload[peer]
+                if peer in self.statistics.peer_last_download:
+                    del self.statistics.peer_last_download[peer]
+                if peer in self.statistics.peer_last_upload:
+                    del self.statistics.peer_last_upload[peer]
 
             client.close()
+
+            del self.client_executors[peer]
 
     async def execute_keep_alive(self):
         while True:
@@ -350,6 +356,11 @@ class Torrent:
         download_peer_active = Torrent.DOWNLOAD_PEER_COUNT - self.tasks_waiting_for_peers
         if download_peer_active <= Torrent.DOWNLOAD_PEER_ACTIVE and \
                 len(self.peer_data) < Torrent.MAX_CONNECT_PEERS:
+            cur_time = time.time()
+            if self.last_reconnect_time is None or \
+                    cur_time - self.last_reconnect_time >= Torrent.RECONNECT_TIMEOUT:
+                print('trying to reconnect')
+                self.connect_to_peers(self.last_tracker_client.peers, True)
             self.more_peers_requested.set()
 
         if time.time() - self.download_start_time <= Torrent.START_DURATION:
@@ -432,23 +443,25 @@ class Torrent:
 
     def connect_to_peers(self, peers, force):
         peers = list({peer for peer in peers
-                      if peer not in self.peer_data })
+                      if peer not in self.client_executors and not self.download_info.is_banned(peer)})
                       # and not self.download_info.is_banned(peer)})
         if force:
             max_peers_count = Torrent.MAX_ACCEPT_PEERS
         else:
             max_peers_count = Torrent.MAX_CONNECT_PEERS
         connecting_peers_count = max(max_peers_count - len(self.peer_data), 0)
-        print('connecting to {} new peers'.format(min(len(peers), connecting_peers_count)))
+        print('trying to connect {} new peers'.format(min(len(peers), connecting_peers_count)))
 
         for peer in peers[:connecting_peers_count]:
             client = PeerTCP(self.peer_id, peer)
             self.client_executors[peer] = asyncio.ensure_future(
                 self.execute_peer_client(peer, client, need_connect=True))
 
+        self.last_reconnect_time = time.time()
+
     def accept_client(self, peer, client):
         if len(self.peer_data) > Torrent.MAX_ACCEPT_PEERS or self.download_info.is_banned(peer) or \
-                peer in self.peer_data:
+                peer in self.client_executors:
             client.close()
             return
         print('accepted connection from {}'.format(peer))
@@ -456,25 +469,43 @@ class Torrent:
             self.execute_peer_client(peer, client, need_connect=False))
 
     async def try_to_announce(self, event):
+        server_port = self.server_port if self.server_port is not None else Torrent.FAKE_SERVER_PORT
+        tier = None
+        url = None
+        lift_url = False
         try:
-            server_port = self.server_port if self.server_port is not None else Torrent.FAKE_SERVER_PORT
-            await self.tracker_client.announce(server_port, event)
-            return True
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            print('exception on announce: {}'.format(e))
+            for tier in self.torrent_info.announce_list:
+                for url in tier:
+                    try:
+                        client = create_tracker_client(url, self.download_info, self.peer_id)
+                        await client.announce(server_port, event)
+                    except asyncio.CancelledError:
+                        raise
+                    # except Exception as e:
+                    #     print('announcement {} failed: {}'.format(url,e))
+                    else:
+                        peer_count = len(client.peers) if client.peers else 'no'
+                        print('announce to {} succeed ({} peers, interval {}, min {})'.format(
+                            url, peer_count, client.interval, client.min_interval
+                        ))
+                        self.last_tracker_client = client
+                        lift_url = True
+                        return True
             return False
+        finally:
+            if lift_url:
+                tier.remove(url)
+                tier.insert(0, url)
 
     async def execute_regular_announcement(self):
         try:
             while True:
-                if self.tracker_client.min_interval is not None:
-                    min_interval = self.tracker_client.min_interval
+                if self.last_tracker_client.min_interval is not None:
+                    min_interval = self.last_tracker_client.min_interval
                 else:
-                    min_interval = min(Torrent.MIN_INTERVAL, self.tracker_client.interval)
+                    min_interval = min(Torrent.MIN_INTERVAL, self.last_tracker_client.interval)
                 await asyncio.sleep(min_interval)
-                default_interval = self.tracker_client.interval
+                default_interval = self.last_tracker_client.interval
                 try:
                     await asyncio.wait_for(self.more_peers_requested.wait(),
                                            default_interval - min_interval)
@@ -483,9 +514,9 @@ class Torrent:
                 except asyncio.TimeoutError:
                     more_peers = False
                 await self.try_to_announce(None)
-                self.connect_to_peers(self.tracker_client.peers, more_peers)
+                self.connect_to_peers(self.last_tracker_client.peers, more_peers)
         finally:
-            await self.try_to_announce('stopped')
+            await self.try_to_announce(EventType.stopped)
 
     @property
     def download_complete(self):
@@ -509,7 +540,7 @@ class Torrent:
         await asyncio.wait(self.request_executors)
 
         self.download_info.complete = True
-        await self.try_to_announce('completed')
+        await self.try_to_announce(EventType.completed)
         print('download complete')
         # for peer, data in self.peer_data.items():
         #     if data.client.is_seed():
@@ -571,7 +602,7 @@ class Torrent:
                 self.peer_data[peer].client.am_choking = False
             print('{} peers unchoked (total uploaded = {})'
                   .format(len(peers_unchoked_current),
-                          humanize_size(self.download_info.total_uploaded)))
+                          humanize_size(self.statistics.total_uploaded)))
 
             await asyncio.sleep(Torrent.CHOKING_TIME)
 
@@ -586,15 +617,15 @@ class Torrent:
         uploaded_queue = deque()
 
         while True:
-            downloaded_queue.append(self.download_info.downloaded_per_session)
-            uploaded_queue.append(self.download_info.uploaded_per_session)
+            downloaded_queue.append(self.statistics.downloaded_per_session)
+            uploaded_queue.append(self.statistics.uploaded_per_session)
 
             if len(downloaded_queue) > 1:
                 periods = (len(downloaded_queue) - 1) * Torrent.SPEED_UPDATE_TIMEOUT
                 downloaded_per_period = downloaded_queue[-1] - downloaded_queue[0]
                 uploaded_per_period = uploaded_queue[-1] - uploaded_queue[0]
-                self.download_info.download_speed = downloaded_per_period / periods
-                self.download_info.upload_speed = uploaded_per_period/ periods
+                self.statistics.download_speed = downloaded_per_period / periods
+                self.statistics.upload_speed = uploaded_per_period/ periods
 
             if len(downloaded_queue) > max_queue_length:
                 downloaded_queue.popleft()
@@ -603,10 +634,14 @@ class Torrent:
             await asyncio.sleep(Torrent.SPEED_UPDATE_TIMEOUT)
             return downloaded_queue
 
+    def shuffle_announce_tiers(self):
+        for tier in self.torrent_info.announce_list:
+            random.shuffle(tier)
+
     async def run(self):
-        while not await self.try_to_announce('started'):
+        while not await self.try_to_announce(EventType.started):
             await asyncio.sleep(Torrent.ANNOUNCE_FAILED_SLEEP_TIME)
-        self.connect_to_peers(self.tracker_client.peers, False)
+        self.connect_to_peers(self.last_tracker_client.peers, True)
         self.tasks += [asyncio.ensure_future(coro) for coro in[
             self.execute_keep_alive(),
             self.execute_regular_announcement(),

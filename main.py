@@ -26,6 +26,7 @@ def humanize_speed(speed: int) -> str:
 
 def format_torrent_info(torrent_info):
     download_info = torrent_info.download_info
+    statistics = download_info.session_stats
     result = 'Name: {}\n'.format(download_info.suggested_name)
     result += 'ID: {}\n'.format(download_info.info_hash.hex())
 
@@ -37,12 +38,12 @@ def format_torrent_info(torrent_info):
         state = 'Downloading'
     result += 'State: {}\n'.format(state)
 
-    result += 'Download from: {}/{} peers\t'.format(download_info.downloading_peer_count, download_info.peer_count)
-    result += 'Upload to: {}/{} peers\n'.format(download_info.uploading_peer_count, download_info.peer_count)
+    result += 'Download from: {}/{} peers\t'.format(statistics.downloading_peer_count, statistics.peer_count)
+    result += 'Upload to: {}/{} peers\n'.format(statistics.uploading_peer_count, statistics.peer_count)
     result += 'Downloading speed: {}\t'.format(
-        humanize_speed(download_info.download_speed) if download_info.download_speed is not None else 'unknown')
+        humanize_speed(statistics.download_speed) if statistics.download_speed is not None else 'unknown')
     result += 'Upload speed: {}\n'.format(
-        humanize_speed(download_info.upload_speed) if download_info.download_speed is not None else 'unknown')
+        humanize_speed(statistics.upload_speed) if statistics.download_speed is not None else 'unknown')
 
     last_piece_info = download_info.pieces[-1]
     downloaded_size = download_info.downloaded_piece_count * download_info.piece_length
@@ -59,10 +60,7 @@ def format_torrent_info(torrent_info):
         selected_size += last_piece_info.length - download_info.piece_length
 
     result += 'Size: {}/{}\t'.format(humanize_size(downloaded_size), humanize_size(selected_size))
-    if download_info.total_downloaded:
-        ratio = download_info.total_uploaded / download_info.total_downloaded
-    else:
-        ratio = 0
+    ratio = statistics.total_uploaded / statistics.total_downloaded if statistics.total_downloaded else 0
     result += 'Ratio: {:.1f}\n'.format(ratio)
 
     progress = downloaded_size/selected_size
@@ -110,31 +108,39 @@ async def delegate_to_control(action):
     finally:
         client.close()
 
+DEFAULT_DOWNLOAD_DIR = 'downloads'
+
+
+async def action_handler(action, args):
+    torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
+    await delegate_to_control(partial(action, info_hash=torrent_info.download_info.info_hash))
+
 
 async def add(args):
-    torrent_info = TorrentInfo.get_info(args.filename, download_dir = DOWNLOAD_DIR)
+    torrent_info = TorrentInfo.get_info(args.filename, download_dir=args.directory)
     await delegate_to_control(partial(ControlManager.add, torrent_info=torrent_info))
 
 
-async def pause(args):
-    torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-    await delegate_to_control(partial(ControlManager.pause, info_hash= torrent_info.download_info.info_hash))
-
-
-async def resume(args):
-    torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-    await delegate_to_control(partial(ControlManager.resume, info_hash= torrent_info.download_info.info_hash))
-
-
-async def remove(args):
-    torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-    await delegate_to_control(partial(ControlManager.remove, info_hash= torrent_info.download_info.info_hash))
+# async def pause(args):
+#     torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
+#     await delegate_to_control(partial(ControlManager.pause, info_hash= torrent_info.download_info.info_hash))
+#
+#
+# async def resume(args):
+#     torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
+#     await delegate_to_control(partial(ControlManager.resume, info_hash= torrent_info.download_info.info_hash))
+#
+#
+# async def remove(args):
+#     torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
+#     await delegate_to_control(partial(ControlManager.remove, info_hash= torrent_info.download_info.info_hash))
 
 
 async def status(args):
     torrent_list = await delegate_to_control(ControlManager.get_torrents)
     torrent_list.sort(key=lambda torrent_info: torrent_info.download_info.suggested_name)
     print('\n'.join(map(format_torrent_info, torrent_list)), end='')
+
 
 def main():
     parser = argparse.ArgumentParser(description='BitTorrent client')
@@ -149,17 +155,14 @@ def main():
     subparser.add_argument('filename', help='.torrent file')
     subparser.set_defaults(func=lambda args: loop.run_until_complete(add(args)))
 
-    subparser = subparsers.add_parser('pause', help='pause torrent')
-    subparser.add_argument('filename', help='Torrent filename')
-    subparser.set_defaults(func=lambda args: loop.run_until_complete(pause(args)))
+    subparser.add_argument('-d', '--directory', default=DEFAULT_DOWNLOAD_DIR, help='download directory')
 
-    subparser = subparsers.add_parser('resume', help='resume torrent')
-    subparser.add_argument('filename', help='Torrent filename')
-    subparser.set_defaults(func=lambda args: loop.run_until_complete(resume(args)))
-
-    subparser = subparsers.add_parser('remove', help='remove torrent')
-    subparser.add_argument('filename', help='Torrent filename')
-    subparser.set_defaults(func=lambda args: loop.run_until_complete(remove(args)))
+    control_commands = ['pause', 'resume', 'remove']
+    for command in control_commands:
+        subparser = subparsers.add_parser(command, help='{} torrent'.format(command))
+        subparser.add_argument('filename', help='Torrent filename')
+        subparser.set_defaults(func=lambda args, action=getattr(ControlManager, command):
+                               loop.run_until_complete(action_handler(action, args)))
 
     subparser = subparsers.add_parser('status', help='show status')
     subparser.set_defaults(func=lambda args: loop.run_until_complete(status(args)))
@@ -167,7 +170,7 @@ def main():
     try:
         arguments = parser.parse_args()
         arguments.func(arguments)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
         print('Error: {}'.format(e), file=sys.stderr)
     finally:
         loop.close()

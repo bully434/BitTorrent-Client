@@ -12,7 +12,7 @@ class ControlServer:
         self.flag = False
 
     HANDSHAKE_MESSAGE = b'bit-torrent:ControlServer\n'
-    PORT_RANGE = range(6881,6890)
+    PORT_RANGE = range(6995, 7000)
     LENGTH_FORMAT = '!I'
     HOST = '127.0.0.1'
 

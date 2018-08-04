@@ -50,7 +50,7 @@ class PeerTCP:
     CONNECT_TIMEOUT = 5
     READ_TIMEOUT = 5
     WRITE_TIMEOUT = 5
-    MAX_SILENCE_DURATION = 5 * 60
+    MAX_SILENCE_DURATION = 3 * 60
     MAX_REQUEST_LENGTH = 2 ** 17
     MAX_MESSAGE_LENGTH = 2 ** 18
     HANDSHAKE_DATA = bytes([len(_handshake_message)]) +_handshake_message
@@ -237,7 +237,7 @@ class PeerTCP:
             if piece_info.validating or piece_info.downloaded:
                 return
             self._downloaded += block_length
-            self.download_info.add_downloaded(self.peer, block_length)
+            self.download_info.session_stats.add_downloaded(self.peer, block_length)
 
             await self.file_structure.write(piece_index * self.download_info.piece_length + block_begin, block_data,
                                             acquire_lock = False)
@@ -316,7 +316,7 @@ class PeerTCP:
         self.send_message(PeerMessages.piece, struct.pack('!2I', request.piece_index, request.block_begin), block)
 
         self._uploaded += request.block_length
-        self.download_info.add_uploaded(self.peer, request.block_length)
+        self.download_info.session_stats.add_uploaded(self.peer, request.block_length)
 
     def send_keep_alive(self):
         self.send_message(None)
