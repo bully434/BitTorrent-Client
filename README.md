@@ -6,7 +6,7 @@ Simple implementation of BitTorrent Client.
 aiohttp==2.3.10
 bitarray==0.8.3
 ```
-###Usage
+### Usage
 1. Start a server
     ```
     $ python main.py start
