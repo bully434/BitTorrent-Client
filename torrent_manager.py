@@ -5,10 +5,9 @@ import hashlib
 import itertools
 
 from math import ceil
-from typing import cast
-from peer_tcp import PeerTCP, SeedError
+from peer_tcp import PeerTCP
 from collections import deque, OrderedDict
-from models import Peer, DownloadInfo, TorrentInfo, BlockRequestFuture
+from models import BlockRequestFuture
 from file_structure import FileStructure
 from trackers import create_tracker_client, EventType
 
@@ -57,9 +56,6 @@ class Torrent:
         self.tasks = []
         self.request_executors = []
         self.executors_processed_requests = []
-        # self.keep_alive_executor = None
-        # self.announce_executor = None
-        # self.upload_executor = None
 
         self.last_tracker_client = None
 
@@ -170,14 +166,6 @@ class Torrent:
 
         return rate
 
-    # async def select_piece(self):
-    #     if not self.not_started_pieces:
-    #         return False
-    #     index = min(self.not_started_pieces, key=self.get_piece_order_rate)
-    #     self.not_started_pieces.remove(index)
-    #     await self.download_piece_start(index)
-    #     return True
-
     def send_cancels(self, request):
         performers = request.prev_performer
         if request.performer is not None:
@@ -205,17 +193,6 @@ class Torrent:
         for peer in piece_info.owners:
             self.peer_data[peer].client.am_interested = True
 
-        # choking_owners = [peer for peer in piece_owners if self.peer_clients[peer].peer_choking]
-        # if len(choking_owners) == len(piece_owners) and choking_owners:
-        #     print('all piece owners are choking, waiting answer from am_interested')
-        #     done, pending = await asyncio.wait([self.peer_clients[peer].drain() for peer in choking_owners],
-        #                                        timeout=0.5)
-        #     for future in done:
-        #         if future.exception() is not None:
-        #             print('drain failed with {}'.format(future.exception()))
-        #     for future in pending:
-        #         future.cancel()
-        #     await asyncio.sleep(0.5)
         concurrent_peers_count = sum(1 for peer, data in self.peer_data.items() if data.queue_size)
         print('piece {} started (owned by {} peers, running {} peers)'
               .format(index, len(piece_info.owners),

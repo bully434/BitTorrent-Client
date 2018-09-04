@@ -2,7 +2,6 @@ import asyncio
 
 from models import Peer
 from peer_tcp import PeerTCP
-from torrent_manager import Torrent
 
 class PeerTCPServer:
     def __init__(self, peer_id, torrent_managers):

@@ -1,4 +1,3 @@
-import re
 import aiohttp
 import bencoder
 import contextlib
@@ -7,28 +6,24 @@ from typing import cast
 from urllib.parse import urlencode
 from urllib.request import urlopen
 from collections import OrderedDict
-from models import Peer, TorrentInfo, grouper
+from models import Peer, grouper
+from trackers.base import BaseTrackerClient, parse_compact_list, EventType
+
+__all__ = ['HTTPTracker']
 
 
 def humanize_size(size):
-    return '{:.1f} Mb'.format(size / TrackerGetRequest.BPMb)
+    return '{:.1f} Mb'.format(size / HTTPTracker.BPMb)
 
-class TrackerGetRequest:
-    def __init__(self, torrent_info, client_peer_id):
-        if re.match(r'https?://', torrent_info.announce_url) is None:
-            raise ValueError('Only HTTP/HTTPS protocols available')
 
-        self.torrent_info = torrent_info
-        self.download_info = torrent_info.download_info
-        self.peer_id = client_peer_id
-        self.statistics = self.download_info.session_stats
+class HTTPTracker(BaseTrackerClient):
+    def __init__(self, url, download_info, client_peer_id):
+        super().__init__(download_info, client_peer_id)
+        self.announce_url = url.geturl()
+        if url.scheme not in ('http', 'https'):
+            raise ValueError('HTTPTracker expected HTTP/HTTPS protocols')
 
-        self.interval = None
-        self.min_interval = None
-        self.seeders = None
-        self.leechers = None
         self._tracker_id = None
-        self._peers = set()
 
     REQUEST_TIMEOUT = 5
 
@@ -63,23 +58,17 @@ class TrackerGetRequest:
 
         peers = response[b'peers']
         if isinstance(peers, bytes):
-            self._peers = TrackerGetRequest._parse_compact_peers_list(peers)
+            self.peers = parse_compact_list(peers)
         else:
-            self._peers = list(map(Peer.from_dict, peers))
+            self.peers = list(map(Peer.from_dict, peers))
 
-        print('{} peers, interval {}, min_interval {}'.format(len(self._peers),
+        print('{} peers, interval {}, min_interval {}'.format(len(self.peers),
                                                               self.interval,
                                                               self.min_interval))
 
     BPMb = 2 ** 20
 
     async def announce(self, server_port, event):
-        print('announce {} (uploaded {} Mb, downloaded {} Mb, left {} Mb)'.format(
-            event,
-            humanize_size(self.statistics.uploaded_per_session),
-            humanize_size(self.statistics.downloaded_per_session),
-            humanize_size(self.download_info.bytes_left)))
-
         request_parameters = {
             'info_hash': self.download_info.info_hash,
             'peer_id': self.peer_id,
@@ -90,25 +79,22 @@ class TrackerGetRequest:
             'event': event,
             'compact': 1,
         }
-        if event is not None:
-            request_parameters['event'] = event
+        if event != EventType.none:
+            request_parameters['event'] = event.name
 
         if self._tracker_id is not None:
             request_parameters['trackerid'] = self._tracker_id
 
-        url = self.torrent_info.announce_url + '?' + urlencode(request_parameters)
-        with aiohttp.Timeout(TrackerGetRequest.REQUEST_TIMEOUT):
+        url = self.announce_url + '?' + urlencode(request_parameters)
+        with aiohttp.Timeout(HTTPTracker.REQUEST_TIMEOUT):
             with contextlib.closing(urlopen(url)) as connection:
                 response = connection.read()
         response = bencoder.decode(response)
         if not response:
-            if event == 'started':
+            if event == EventType.started:
                 raise ValueError('Empty answer on start announcement')
             return
         response = cast(OrderedDict, response)
         self.handle_tracker_response(response)
 
-    @property
-    def peers(self):
-        return self._peers
 

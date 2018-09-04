@@ -45,24 +45,7 @@ def decode(input):
             return input[start:end], input[end:]
         else:
             raise ValueError("Wrong input")
-    # def pieces(parse):
-    #     data = parse[b'info'][b'pieces']
-    #     pieces = []
-    #     offset = 0
-    #     length = len(data)
-    #     while offset < length:
-    #         pieces.append(binascii.hexlify(data[offset:offset + 20]))
-    #         offset += 20
-    #     return pieces
 
     parse, rest = torrent_parsing(input)
     return parse
-    # print(parse)
-    # return {'Filename': parse[b'info'][b'name'],
-    #         'File length': parse[b'info'][b'length'],
-    #         'Announce URL': parse[b'announce'],
-    #         'Info': parse[b'info'],
-    #         'Length': parse[b'info'][b'length'],
-    #         'Pieces Length': parse[b'info'][b'piece length'],
-    #         'Pieces': pieces(parse)}
 

@@ -2,7 +2,7 @@ import asyncio
 import copy
 import pickle
 
-from models import generate_peer_id, TorrentInfo
+from models import generate_peer_id
 from peer_tcp_server import PeerTCPServer
 from torrent_manager import Torrent
 

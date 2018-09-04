@@ -8,7 +8,7 @@ from functools import partial
 from control_client import ControlClient
 from control_manager import ControlManager
 from control_server import ControlServer
-from models import TorrentInfo, DownloadInfo
+from models import TorrentInfo
 
 DOWNLOAD_DIR = 'downloads'
 STATE_FILE = 'state.bin'

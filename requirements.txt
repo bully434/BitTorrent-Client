@@ -1,0 +1,4 @@
+aiohttp==2.3.10
+bitarray==0.8.3
+torrent_parser==0.3.0
+typing==3.6.4

@@ -1,11 +1,9 @@
 import struct
 import random
 import asyncio
-import urllib.parse
 
 from enum import Enum
-from models import DownloadInfo
-from trackers.base import BaseTrackerClient, EventType, parse_compact_list, TrackerError
+from trackers.base import BaseTrackerClient, parse_compact_list, TrackerError
 
 __all__ = ['UDPTracker']
 

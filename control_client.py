@@ -1,7 +1,7 @@
 import asyncio
 
 from control_server import ControlServer
-from control_manager import ControlManager
+
 
 class ControlClient:
     def __init__(self):
@@ -39,10 +39,9 @@ class ControlClient:
         if self._writer is not None:
             self._writer.close()
 
-    # async def __aenter__(self):
-    #     await self.connect()
-    #     return self
-    #
-    # async def __aexit__(self, exc_type, exc_val, exc_tb):
-    #     print('Here')
-    #     self.close()
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.close()

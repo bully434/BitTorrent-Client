@@ -1,7 +1,6 @@
 from enum import Enum
-from urllib.parse import urlparse
 
-from models import DownloadInfo, Peer, TorrentInfo
+from models import Peer
 
 
 def grouper(arr, group_size):

@@ -2,7 +2,6 @@ import asyncio
 import pickle
 import struct
 
-from control_manager import ControlManager
 
 class ControlServer:
     def __init__(self, control):
