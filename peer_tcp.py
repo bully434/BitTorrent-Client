@@ -5,8 +5,7 @@ import bitarray
 
 from math import ceil
 from typing import cast
-from file_structure import FileStructure
-from models import SHA1_DIGEST_LEN, DownloadInfo, Peer, BlockRequest
+from models import SHA1_DIGEST_LEN, BlockRequest
 
 
 class PeerMessages(enum.Enum):
@@ -137,9 +136,6 @@ class PeerTCP:
             print('Unknown message type {}'.format(data[0]))
             return None
         payload = memoryview(data)[1:]
-
-        # print('incoming message {} length={}'.format(message_id.name, length))
-
         return message_id, payload
 
     KEEP_ALIVE_MESSAGE = b'\0' * 4
@@ -151,7 +147,6 @@ class PeerTCP:
             return
 
         length = sum(len(portion) for portion in payload) + 1
-        # print('outcoming message {} length={}'.format(message_id.name, length))
 
         self._writer.write(struct.pack('!IB', length, message_id.value))
         for portion in payload:
@@ -184,7 +179,6 @@ class PeerTCP:
     def handle_have(self, message_id, payload):
         if message_id == PeerMessages.have:
             (index,) = struct.unpack('!I', payload)
-            #self.download_info.piece_owners[index].add(self.peer)
             self.mark_owner(index)
 
         elif message_id == PeerMessages.bitfield:
@@ -195,13 +189,10 @@ class PeerTCP:
             arr.frombytes(payload.tobytes())
             for i in range(piece_count):
                 if arr[i]:
-                    #self.download_info.piece_owners[i].add(self.peer)
                     self.mark_owner(i)
             for i in range(piece_count, len(arr)):
                 if arr[i]:
                     raise ValueError('Spare bits in "bitfield" message must be zero')
-        # if self.download_info.is_complete and self.is_seed:
-        #     raise SeedError('Seed disconnection, download complete')
 
     async def handle_requests(self, message_id, payload):
         piece_index, begin, length = struct.unpack('!3I', cast(bytes, payload))
@@ -223,7 +214,6 @@ class PeerTCP:
 
     async def handle_block(self, payload):
         if not self._am_interested:
-            # For example, we can be not interested in pieces from peers with big distruct rate
             return
         fmt = '!2I'
         piece_index, block_begin = struct.unpack_from(fmt, payload)
@@ -241,11 +231,7 @@ class PeerTCP:
 
             await self.file_structure.write(piece_index * self.download_info.piece_length + block_begin, block_data,
                                             acquire_lock = False)
-
             piece_info.mark_downloaded_blocks(self.peer, request)
-    # @property
-    # def is_seed(self):
-    #     return self.piece_owned & self.download_info.piece_selected == self.download_info.piece_selected
 
     @property
     def am_choking(self):

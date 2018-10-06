@@ -4,12 +4,20 @@ import asyncio
 import hashlib
 import itertools
 
+from enum import Enum
 from math import ceil
 from peer_tcp import PeerTCP
 from collections import deque, OrderedDict
 from models import BlockRequestFuture
 from file_structure import FileStructure
-from trackers import create_tracker_client, EventType
+from trackers import create_tracker_client
+
+
+class EventType(Enum):
+    none = 0
+    completed = 1
+    started = 2
+    stopped = 3
 
 
 def humanize_size(size):
@@ -421,7 +429,6 @@ class Torrent:
     def connect_to_peers(self, peers, force):
         peers = list({peer for peer in peers
                       if peer not in self.client_executors and not self.download_info.is_banned(peer)})
-                      # and not self.download_info.is_banned(peer)})
         if force:
             max_peers_count = Torrent.MAX_ACCEPT_PEERS
         else:
@@ -458,8 +465,8 @@ class Torrent:
                         await client.announce(server_port, event)
                     except asyncio.CancelledError:
                         raise
-                    # except Exception as e:
-                    #     print('announcement {} failed: {}'.format(url,e))
+                    except Exception as e:
+                        print('announcement {} failed: {}'.format(url,e))
                     else:
                         peer_count = len(client.peers) if client.peers else 'no'
                         print('announce to {} succeed ({} peers, interval {}, min {})'.format(
@@ -519,9 +526,6 @@ class Torrent:
         self.download_info.complete = True
         await self.try_to_announce(EventType.completed)
         print('download complete')
-        # for peer, data in self.peer_data.items():
-        #     if data.client.is_seed():
-        #         self.client_executors[peer].cancel()
 
     CHOKING_TIME = 10
     UPLOAD_PEER_COUNT = 4

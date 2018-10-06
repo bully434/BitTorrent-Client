@@ -21,6 +21,7 @@ def grouper(arr, group_size):
 def generate_peer_id():
     return bytes(random.randint(0, 255) for _ in range(20))
 
+
 class PieceInfo:
     def __init__(self, piece_hash, length):
         self.piece_hash = piece_hash
@@ -39,7 +40,6 @@ class PieceInfo:
     def reset_content(self):
         self.downloaded = False
         self.sources = set()
-
         self.block_downloaded = None
         self.blocks_expected = set()
 
@@ -50,7 +50,7 @@ class PieceInfo:
 
     def mark_downloaded_blocks(self, source, request):
         if self.downloaded:
-            raise ValueError('Piece Already Downloaded')
+            raise ValueError('Piece has already been downloaded')
         self.sources.add(source)
 
         arr = self.block_downloaded
@@ -161,6 +161,9 @@ class FileInfo:
         self.path = path
         self.md5sum = md5sum
 
+        self.offset = None
+        self.selected = True
+
     @classmethod
     def get_info(self, dictionary):
         if b'path' in dictionary:
@@ -224,6 +227,8 @@ class DownloadInfo:
         self.suggested_name = suggested_name
         self.session_stats = SessionStat(None)
         self.files = files
+        self.file_tree = {}
+        self.create_file_tree()
         self.private = private
         self.host_distrust_rates = {}
 
@@ -237,6 +242,78 @@ class DownloadInfo:
         self.downloaded_piece_count = 0
         self.interesting_pieces = None
         self._complete = False
+
+    def create_file_tree(self):
+        offset = 0
+        for item in self.files:
+            item.offset = offset
+            offset += item.length
+
+            if not item.path:
+                self.file_tree = item
+            else:
+                directory = self.file_tree
+                for elem in item.path[:-1]:
+                    directory = directory.setdefault(elem, {})
+                directory[item.path[-1]] = item
+
+    def get_file_tree_node(self, path):
+        result = self.file_tree
+        try:
+            for elem in path:
+                result = result[elem]
+        except KeyError:
+            raise ValueError("Path {} doesn't exist".format('/'.format(path)))
+        return result
+
+    @staticmethod
+    def traverse_tree(node):
+        if isinstance(node, FileInfo):
+            yield node
+            return
+        for child in node.values():
+            yield from DownloadInfo.traverse_tree(child)
+
+    def select_files(self, paths, mode):
+        if mode not in ('whitelist', 'blacklist'):
+            raise ValueError('Invalid mode {}'.format(mode))
+        include = (mode == 'whitelist')
+
+        if len(self.files) == 1 and not self.files[0].path:
+            raise ValueError("Can't select files in single-torrent")
+        for info in self.pieces:
+            info.selected = not include
+        for info in self.files:
+            info.selected = not include
+
+        segments = []
+        for path in paths:
+            for node in DownloadInfo.traverse_tree(self.get_file_tree_node(path)):
+                node.selected = include
+                segments.append((node.offset, node.length))
+        if (include and not segments) or (not include and len(segments) == len(self.files)):
+            raise ValueError("It's not possible to exclude all files")
+
+        segments.sort()
+        united_segments = []
+        for segment in segments:
+            if united_segments:
+                last_segment = united_segments[-1]
+                if last_segment[0] + last_segment[1] == segment[0]:
+                    united_segments[-1] = (last_segment[0], last_segment[1] + segment[1])
+                    continue
+            united_segments.append(segment)
+
+        for offset, length in united_segments:
+            if include:
+                piece_begin = offset // self.piece_length
+                piece_end = ceil((offset + length)/self.piece_length)
+            else:
+                piece_begin = ceil(offset/self.piece_length)
+                piece_end = (offset + length) // self.piece_length
+
+            for index in range(piece_begin, piece_end):
+                self.pieces[index].selected = include
 
     def reset_run_state(self):
         self.pieces = [copy.copy(info) for info in self.pieces]

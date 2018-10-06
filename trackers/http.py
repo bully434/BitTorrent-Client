@@ -2,23 +2,42 @@ import aiohttp
 import bencoder
 import contextlib
 
+from enum import Enum
 from typing import cast
 from urllib.parse import urlencode
 from urllib.request import urlopen
 from collections import OrderedDict
 from models import Peer, grouper
-from trackers.base import BaseTrackerClient, parse_compact_list, EventType
 
 __all__ = ['HTTPTracker']
+
+
+class EventType(Enum):
+    none = 0
+    completed = 1
+    started = 2
+    stopped = 3
+
+
+class TrackerError(Exception):
+    pass
 
 
 def humanize_size(size):
     return '{:.1f} Mb'.format(size / HTTPTracker.BPMb)
 
 
-class HTTPTracker(BaseTrackerClient):
+class HTTPTracker:
     def __init__(self, url, download_info, client_peer_id):
-        super().__init__(download_info, client_peer_id)
+        self.download_info = download_info
+        self.statistics = self.download_info.session_stats
+        self.peer_id = client_peer_id
+        self.interval = None
+        self.min_interval = None
+        self.seeders = None
+        self.leechers = None
+        self.peers = None
+
         self.announce_url = url.geturl()
         if url.scheme not in ('http', 'https'):
             raise ValueError('HTTPTracker expected HTTP/HTTPS protocols')
@@ -58,7 +77,7 @@ class HTTPTracker(BaseTrackerClient):
 
         peers = response[b'peers']
         if isinstance(peers, bytes):
-            self.peers = parse_compact_list(peers)
+            self.peers = HTTPTracker._parse_compact_peers_list(peers)
         else:
             self.peers = list(map(Peer.from_dict, peers))
 

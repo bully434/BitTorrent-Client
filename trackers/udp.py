@@ -3,9 +3,34 @@ import random
 import asyncio
 
 from enum import Enum
-from trackers.base import BaseTrackerClient, parse_compact_list, TrackerError
+from models import Peer, grouper
 
 __all__ = ['UDPTracker']
+
+
+class TrackerError(Exception):
+    pass
+
+
+class EventType(Enum):
+    none = 0
+    completed = 1
+    started = 2
+    stopped = 3
+
+
+class ActionType(Enum):
+    connect = 0
+    announce = 1
+    scrape = 2
+    error = 3
+
+
+def pack(*data):
+    assert len(data) % 2 == 0
+    format = '!' + ''.join(fmt for fmt in data[::2])
+    values = [e for e in data[1::2]]
+    return struct.pack(format, *values)
 
 
 def humanize_size(size):
@@ -13,8 +38,7 @@ def humanize_size(size):
 
 
 class DatagramReaderProtocol:
-    """Implements missing stream API for UDP with asyncio.
-    Combines analogs for StreamReaderProtocol and StreamReader classes."""
+    """Stream API for UDP. StreamReaderProtocol and StreamReader classes."""
     def __init__(self):
         self._buffer = bytearray()
         self._waiter = None
@@ -60,25 +84,19 @@ class DatagramReaderProtocol:
         self._wakeup_waiter()
 
 
-class ActionType(Enum):
-    connect = 0
-    announce = 1
-    scrape = 2
-    error = 3
-
-
-def pack(*data):
-    assert len(data) % 2 == 0
-    format = '!' + ''.join(fmt for fmt in data[::2])
-    values = [e for e in data[1::2]]
-    return struct.pack(format, *values)
-
-
-class UDPTracker(BaseTrackerClient):
+class UDPTracker:
     BPMb = 2 ** 20
 
     def __init__(self, url, download_info, client_peer_id, *, loop=None):
-        super().__init__(download_info, client_peer_id)
+        self.download_info = download_info
+        self.statistics = self.download_info.session_stats
+        self.peer_id = client_peer_id
+        self.interval = None
+        self.min_interval = None
+        self.seeders = None
+        self.leechers = None
+        self.peers = None
+
         if url.scheme != 'udp':
             raise ValueError('UDPTracker expected UDP protocol')
         self.host = url.hostname
@@ -107,6 +125,12 @@ class UDPTracker(BaseTrackerClient):
             raise TrackerError(message.decode())
         if action != expected_action:
             raise ValueError('Unexpected action ID (exp {} real {})'.format(expected_action.name, action.name))
+
+    @staticmethod
+    def _parse_compact_peers_list(data):
+        if len(data) % 6 != 0:
+            raise ValueError('Invalid length of a compact representation of peers')
+        return list(map(Peer.from_compact_form, grouper(data, 6)))
 
     async def announce(self, server_port, event):
         transport, protocol = await self.loop.create_datagram_endpoint(
@@ -148,7 +172,7 @@ class UDPTracker(BaseTrackerClient):
             )
             self.min_interval = self.interval
             compact_peer_list = response[UDPTracker.RESPONSE_HEADER_LEN + struct.calcsize(format):]
-            self.peers = parse_compact_list(compact_peer_list)
+            self.peers = UDPTracker._parse_compact_peers_list(compact_peer_list)
         finally:
             transport.close()
 

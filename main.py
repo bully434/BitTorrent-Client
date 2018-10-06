@@ -1,73 +1,23 @@
 import os
+import re
 import sys
 import asyncio
 import argparse
-
+import formatter
 
 from functools import partial
-from control_client import ControlClient
-from control_manager import ControlManager
-from control_server import ControlServer
+from controllers.client import ControlClient
+from controllers.manager import ControlManager
+from controllers.server import ControlServer
 from models import TorrentInfo
 
 DOWNLOAD_DIR = 'downloads'
 STATE_FILE = 'state.bin'
-
-BYTES_PER_MIB = 2 ** 20
-
-
-def humanize_size(size: int) -> str:
-    return '{:.1f} Mb'.format(size / BYTES_PER_MIB)
+PATH_SPLIT_REGEX = re.compile(r'\\')
 
 
-def humanize_speed(speed: int) -> str:
-    return '{:.1f} Mb/s'.format(speed / BYTES_PER_MIB)
+DEFAULT_DOWNLOAD_DIR = 'downloads'
 
-
-def format_torrent_info(torrent_info):
-    download_info = torrent_info.download_info
-    statistics = download_info.session_stats
-    result = 'Name: {}\n'.format(download_info.suggested_name)
-    result += 'ID: {}\n'.format(download_info.info_hash.hex())
-
-    if torrent_info.paused:
-        state = 'Paused'
-    elif download_info.complete:
-        state = 'Uploading'
-    else:
-        state = 'Downloading'
-    result += 'State: {}\n'.format(state)
-
-    result += 'Download from: {}/{} peers\t'.format(statistics.downloading_peer_count, statistics.peer_count)
-    result += 'Upload to: {}/{} peers\n'.format(statistics.uploading_peer_count, statistics.peer_count)
-    result += 'Downloading speed: {}\t'.format(
-        humanize_speed(statistics.download_speed) if statistics.download_speed is not None else 'unknown')
-    result += 'Upload speed: {}\n'.format(
-        humanize_speed(statistics.upload_speed) if statistics.download_speed is not None else 'unknown')
-
-    last_piece_info = download_info.pieces[-1]
-    downloaded_size = download_info.downloaded_piece_count * download_info.piece_length
-    # if download_info.piece_downloaded[-1]:
-    #     downloaded_size += last_piece_info - download_info.piece_length
-    # selected_size = download_info.piece_selected.count() * download_info.piece_length
-    # if download_info.piece_selected[-1]:
-    #     selected_size += last_piece_info - download_info.piece_length
-    if last_piece_info.downloaded:
-        downloaded_size += last_piece_info.length - download_info.piece_length
-    selected_piece_count = sum(1 for info in download_info.pieces if info.selected)
-    selected_size = selected_piece_count * download_info.piece_length
-    if last_piece_info.selected:
-        selected_size += last_piece_info.length - download_info.piece_length
-
-    result += 'Size: {}/{}\t'.format(humanize_size(downloaded_size), humanize_size(selected_size))
-    ratio = statistics.total_uploaded / statistics.total_downloaded if statistics.total_downloaded else 0
-    result += 'Ratio: {:.1f}\n'.format(ratio)
-
-    progress = downloaded_size/selected_size
-    progress_bar = ('#' * round(progress * 50)).ljust(50)
-    result += 'Progress: {:5.1f}% [{}]\n'.format(progress*100, progress_bar)
-
-    return result
 
 def run_daemon(args):
     loop = asyncio.get_event_loop()
@@ -75,14 +25,9 @@ def run_daemon(args):
     loop.run_until_complete(control.start())
     if os.path.isfile(STATE_FILE) and os.path.getsize(STATE_FILE) > 0:
         with open(STATE_FILE, 'rb') as file:
-            # torrent_info = pickle.load(file)
             control.load(file)
         print('state recovered')
-    # else:
-    #     for arg in sys.argv[1:]:
-    #         torrent_info = TorrentInfo.get_info(arg, download_dir = DOWNLOAD_DIR)
-    #         control.add(torrent_info)
-        print('new torrent has been successfully added')
+    print('new torrent has been successfully added')
 
     control_server = ControlServer(control)
     loop.run_until_complete(control_server.start())
@@ -100,6 +45,13 @@ def run_daemon(args):
         loop.close()
 
 
+def show_torrent_handler(args):
+    torrent_info = TorrentInfo.get_info(args.filename, download_dir=None)
+    content = formatter.join(
+        formatter.title_format(torrent_info) + formatter.content_format(torrent_info))
+    print(content, end='')
+
+
 async def delegate_to_control(action):
     client = ControlClient()
     await client.connect()
@@ -108,64 +60,87 @@ async def delegate_to_control(action):
     finally:
         client.close()
 
-DEFAULT_DOWNLOAD_DIR = 'downloads'
-
-
-async def action_handler(action, args):
-    torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-    await delegate_to_control(partial(action, info_hash=torrent_info.download_info.info_hash))
-
 
 async def add(args):
-    torrent_info = TorrentInfo.get_info(args.filename, download_dir=args.directory)
-    await delegate_to_control(partial(ControlManager.add, torrent_info=torrent_info))
+    torrents = [TorrentInfo.get_info(filename, download_dir=args.directory) for filename in args.filenames]
+    if args.include:
+        paths = args.include
+        mode = 'whitelist'
+    elif args.exclude:
+        paths = args.exclude
+        mode = 'blacklist'
+    else:
+        paths = None
+        mode = None
+    if mode is not None:
+        if len(torrents) > 1:
+            raise ValueError("Can't handle --include and --exclude when several files are added")
+        torrent_info = torrents[0]
+        paths = [PATH_SPLIT_REGEX.split(path) for path in paths]
+        torrent_info.download_info.select_files(paths, mode)
+    async with ControlClient() as client:
+        for info in torrents:
+            await client.execute(partial(ControlManager.add, torrent_info=info))
 
 
-# async def pause(args):
-#     torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-#     await delegate_to_control(partial(ControlManager.pause, info_hash= torrent_info.download_info.info_hash))
-#
-#
-# async def resume(args):
-#     torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-#     await delegate_to_control(partial(ControlManager.resume, info_hash= torrent_info.download_info.info_hash))
-#
-#
-# async def remove(args):
-#     torrent_info = TorrentInfo.get_info(args.filename, download_dir=DOWNLOAD_DIR)
-#     await delegate_to_control(partial(ControlManager.remove, info_hash= torrent_info.download_info.info_hash))
+async def control_action_handler(args):
+    action = getattr(ControlManager, args.action)
+    torrents = [TorrentInfo.get_info(filename, download_dir=None) for filename in args.filenames]
+    for info in torrents:
+        await delegate_to_control(partial(action, info_hash=info.download_info.info_hash))
 
 
-async def status(args):
-    torrent_list = await delegate_to_control(ControlManager.get_torrents)
-    torrent_list.sort(key=lambda torrent_info: torrent_info.download_info.suggested_name)
-    print('\n'.join(map(format_torrent_info, torrent_list)), end='')
+def status_server_handler(manager):
+    torrents = list(manager.get_torrents())
+    if not torrents:
+        return 'No torrents have been added'
+
+    torrents.sort(key=lambda info: info.download_info.suggested_name)
+    return '\n'.join(
+        formatter.join(
+            formatter.title_format(info) + formatter.status_format(info))
+        for info in torrents).rstrip()
+
+
+async def status_handler(args):
+    status = await delegate_to_control(status_server_handler)
+    print(status)
 
 
 def main():
     parser = argparse.ArgumentParser(description='BitTorrent client')
-    subparsers = parser.add_subparsers(help='action')
+    subparsers = parser.add_subparsers(description='Specify an action before "--help" to show parameters for it.',
+                                       metavar='ACTION', dest='action')
 
     loop = asyncio.get_event_loop()
 
-    parser_start = subparsers.add_parser('start', help='start a server')
-    parser_start.set_defaults(func=run_daemon)
+    subparser = subparsers.add_parser('start', help='start a server')
+    subparser.set_defaults(func=run_daemon)
 
-    subparser = subparsers.add_parser('add', help='add torrent')
-    subparser.add_argument('filename', help='.torrent file')
+    subparser = subparsers.add_parser('show', help="Show torrent content")
+    subparser.add_argument('filename', help='Torrent file')
+    subparser.set_defaults(func=show_torrent_handler)
+
+    subparser = subparsers.add_parser('add', help='Add new torrent')
+    subparser.add_argument('filenames', nargs='+', help='Torrent file names')
+
+    subparser.add_argument('-d', '--directory', default=DEFAULT_DOWNLOAD_DIR, help='Download directory')
+
+    group = subparser.add_mutually_exclusive_group()
+    group.add_argument('--include', action='append',
+                       help='Download files and dirs marked with "--include"')
+    group.add_argument('--exclude', action='append',
+                       help='Download files and dirs except of marked with "--exclude"')
+
     subparser.set_defaults(func=lambda args: loop.run_until_complete(add(args)))
-
-    subparser.add_argument('-d', '--directory', default=DEFAULT_DOWNLOAD_DIR, help='download directory')
 
     control_commands = ['pause', 'resume', 'remove']
     for command in control_commands:
-        subparser = subparsers.add_parser(command, help='{} torrent'.format(command))
-        subparser.add_argument('filename', help='Torrent filename')
-        subparser.set_defaults(func=lambda args, action=getattr(ControlManager, command):
-                               loop.run_until_complete(action_handler(action, args)))
-
-    subparser = subparsers.add_parser('status', help='show status')
-    subparser.set_defaults(func=lambda args: loop.run_until_complete(status(args)))
+        subparser = subparsers.add_parser(command, help='{} torrent'.format(command.capitalize()))
+        subparser.add_argument('filenames', nargs='*' if command != 'remove' else '+', help='Torrent file names')
+        subparser.set_defaults(func=lambda args: loop.run_until_complete(control_action_handler(args)))
+    subparser = subparsers.add_parser('status', help='Show status')
+    subparser.set_defaults(func=lambda args: loop.run_until_complete(status_handler(args)))
 
     try:
         arguments = parser.parse_args()

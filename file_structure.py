@@ -2,7 +2,6 @@ import os
 import bisect
 import asyncio
 import functools
-from models import DownloadInfo
 
 
 def delegate_executor(func):

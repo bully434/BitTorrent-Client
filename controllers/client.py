@@ -1,6 +1,6 @@
 import asyncio
 
-from control_server import ControlServer
+from controllers.server import ControlServer
 
 
 class ControlClient:

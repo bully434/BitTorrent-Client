@@ -2,8 +2,6 @@
 
 import re
 import string
-import sys
-import binascii
 
 
 def encode(obj):
@@ -15,7 +13,7 @@ def encode(obj):
         return b"l%se" % b"".join(map(encode, obj))
     elif type(obj) == int:
         return b"i%ie" % obj
-    raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a "
+    raise ValueError("Invalid object (object must be bytestring, integer, list or"
                      "dictionary)")
 
 

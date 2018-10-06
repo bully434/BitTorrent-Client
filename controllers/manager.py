@@ -16,13 +16,7 @@ class ControlManager:
         self.torrent_managers_executors = {}
 
     def get_torrents(self):
-        result = []
-        for manager, torrent_info in self.torrents.items():
-            torrent_info = copy.copy(torrent_info)
-            torrent_info.download_info = copy.copy(torrent_info.download_info)
-            torrent_info.download_info.reset_run_state()
-            result.append(torrent_info)
-        return result
+        return self.torrents.values()
 
     async def start(self):
         await self.server.start()
@@ -86,7 +80,12 @@ class ControlManager:
         torrent_info.paused = True
 
     def dump(self, file):
-        torrent_list = self.get_torrents()
+        torrent_list = []
+        for manager, torrent_info in self.torrents.items():
+            torrent_info = copy.copy(torrent_info)
+            torrent_info.download_info = copy.copy(torrent_info.download_info)
+            torrent_info.download_info.reset_run_state()
+            torrent_list.append(torrent_info)
         pickle.dump(torrent_list, file)
         print('state saved ({} torrents)'.format(len(torrent_list)))
 

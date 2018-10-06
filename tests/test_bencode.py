@@ -36,5 +36,6 @@ class MyTestCase(unittest.TestCase):
         result = decode(b'd3:bar4:spam3:fooi42e4:messli1e1:cee')
         self.assertEquals(expected, result)
 
+
 if __name__ == '__main__':
     unittest.main()
