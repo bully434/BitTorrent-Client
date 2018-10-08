@@ -134,7 +134,7 @@ def main():
 
     subparser.set_defaults(func=lambda args: loop.run_until_complete(add(args)))
 
-    control_commands = ['pause', 'resume', 'remove']
+    control_commands = ['pause', 'resume', 'remove', 'priority']
     for command in control_commands:
         subparser = subparsers.add_parser(command, help='{} torrent'.format(command.capitalize()))
         subparser.add_argument('filenames', nargs='*' if command != 'remove' else '+', help='Torrent file names')

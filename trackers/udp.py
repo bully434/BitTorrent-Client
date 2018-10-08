@@ -37,8 +37,7 @@ def humanize_size(size):
     return '{:.1f} Mb'.format(size / UDPTracker.BPMb)
 
 
-class DatagramReaderProtocol:
-    """Stream API for UDP. StreamReaderProtocol and StreamReader classes."""
+class DatagramProtocol:
     def __init__(self):
         self._buffer = bytearray()
         self._waiter = None
@@ -48,7 +47,7 @@ class DatagramReaderProtocol:
     def connection_made(self, transport):
         pass
 
-    async def recv(self):
+    async def receive(self):
         if self._waiter is not None:
             raise RuntimeError('Another coroutine is already waiting for incoming data')
         if not self._connection_lost and not self._buffer:
@@ -105,7 +104,6 @@ class UDPTracker:
         self.loop = asyncio.get_event_loop() if loop is None else loop
 
         self.key = random.randint(0, 2**32-1)
-        # Source: https://wiki.theory.org/BitTorrentSpecification#Tracker_Request_Parameters
 
     REQUEST_TIMEOUT = 12
     CONNECTION_ID = 0x41727101980
@@ -133,8 +131,9 @@ class UDPTracker:
         return list(map(Peer.from_compact_form, grouper(data, 6)))
 
     async def announce(self, server_port, event):
+        
         transport, protocol = await self.loop.create_datagram_endpoint(
-            DatagramReaderProtocol, remote_addr=(self.host, self.port))
+            DatagramProtocol, remote_addr=(self.host, self.port))
         try:
             transaction_id = random.randint(0, 2**32-1)
             request = pack(
@@ -143,7 +142,7 @@ class UDPTracker:
                 'I', transaction_id,
             )
             transport.sendto(request)
-            response = await protocol.recv()
+            response = await protocol.receive()
 
             UDPTracker.check_response(response, transaction_id, ActionType.connect)
             (conn_id,) = struct.unpack_from('!Q', response, UDPTracker.RESPONSE_HEADER_LEN)
@@ -164,7 +163,7 @@ class UDPTracker:
             )
             transport.sendto(request)
 
-            response = await asyncio.wait_for(protocol.recv(), UDPTracker.REQUEST_TIMEOUT)
+            response = await asyncio.wait_for(protocol.receive(), UDPTracker.REQUEST_TIMEOUT)
             UDPTracker.check_response(response, transaction_id, ActionType.announce)
             format = '!3I'
             self.interval, self.leechers, self.seeders = struct.unpack_from(

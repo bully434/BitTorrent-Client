@@ -196,7 +196,7 @@ class SessionStat:
     @staticmethod
     def get_peer_count(time_dict):
         cur_time = time.time()
-        return sum(1 for t in time_dict.values() if cur_time - t <= DownloadInfo.PEER_CONSIDERATION_TIME)
+        return sum(1 for t in time_dict.values() if cur_time - t <= SessionStat.PEER_CONSIDERATION_TIME)
 
     @property
     def downloading_peer_count(self):
@@ -225,12 +225,12 @@ class DownloadInfo:
         self.info_hash = info_hash
         self.piece_length = piece_length
         self.suggested_name = suggested_name
-        self.session_stats = SessionStat(None)
         self.files = files
         self.file_tree = {}
         self.create_file_tree()
         self.private = private
         self.host_distrust_rates = {}
+        self.session_stats = SessionStat(None)
 
         self.pieces = [PieceInfo(item, piece_length) for item in piece_hashes[:-1]]
         last_piece_length = self.total_size - (len(piece_hashes ) -1) * self.piece_length
@@ -322,7 +322,7 @@ class DownloadInfo:
         self.interesting_pieces = set()
 
     def reset_stats(self):
-        self.session_stats = SessionStat(None)
+        self.session_stats = SessionStat(self.session_stats)
 
     PEER_CONSIDERATION_TIME = 10
 

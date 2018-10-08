@@ -46,6 +46,15 @@ class ControlManager:
         self.start_torrent_manager(info_hash)
         torrent_info.paused = False
 
+    async def priority(self, info_hash):
+        if info_hash not in self.torrents:
+            raise ValueError('Torrent not found')
+        for _, torrent_info in self.torrents.items():
+            info = torrent_info.download_info.info_hash
+            if not torrent_info.paused:
+                await self.pause(info)
+        self.resume(info_hash)
+
     async def stop_torrent_manager(self, info_hash):
         manager_executor = self.torrent_managers_executors[info_hash]
         manager_executor.cancel()
@@ -76,7 +85,6 @@ class ControlManager:
         if torrent_info.paused:
             raise ValueError('Torrent is already paused')
         await self.stop_torrent_manager(info_hash)
-
         torrent_info.paused = True
 
     def dump(self, file):
