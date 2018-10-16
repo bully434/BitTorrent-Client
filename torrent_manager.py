@@ -49,7 +49,7 @@ class PeerData:
 
 
 class Torrent:
-    def __init__(self, torrent_info, client_peer_id, server_port):
+    def __init__(self, torrent_info, client_peer_id, server_port, max_connect=30, max_accept=55):
         self.torrent_info = torrent_info
         self.download_info = torrent_info.download_info
         self.download_info.reset_run_state()
@@ -70,6 +70,8 @@ class Torrent:
         self.pieces_to_download = None
         self.not_started_pieces = None
         self.download_start_time = None
+        self.max_connect_peers = max_connect
+        self.max_accept_peers = max_accept
 
         self.piece_block_queue = OrderedDict()
 
@@ -82,10 +84,10 @@ class Torrent:
 
         self.file_structure = FileStructure(torrent_info.download_dir, torrent_info.download_info)
 
-    DOWNLOAD_PEER_COUNT = 15
+    DOWNLOAD_PEER_COUNT = 15 #15
     DOWNLOAD_REQUEST_QUEUE_SIZE = 10
     TASKS_AWAITING_REQUEST = 15
-    REQUEST_LENGTH = 2 ** 14
+    REQUEST_LENGTH = 2 ** 14 #14
     HANG_PEER_TIME = 10
     PEER_LEAVING_ALONE_TIME_ENDGAME = 40
 
@@ -93,12 +95,12 @@ class Torrent:
     NO_PEER_SLEEP_TIME = 3
     ANNOUNCE_FAILED_SLEEP_TIME = 3
 
-    REQUEST_TIMEOUT = 6
+    REQUEST_TIMEOUT = 6 #6
     REQUEST_TIMEOUT_ENDGAME = 1
     RECONNECT_TIMEOUT = 50
 
-    MAX_CONNECT_PEERS = 30
-    MAX_ACCEPT_PEERS = 55
+    MAX_CONNECT_PEERS = 30 #30
+    MAX_ACCEPT_PEERS = 55 #55
     START_DURATION = 5
     NO_PEER_SLEEP_TIME_START = 1
 
@@ -340,7 +342,7 @@ class Torrent:
         self.tasks_waiting_for_peers += 1
         download_peer_active = Torrent.DOWNLOAD_PEER_COUNT - self.tasks_waiting_for_peers
         if download_peer_active <= Torrent.DOWNLOAD_PEER_ACTIVE and \
-                len(self.peer_data) < Torrent.MAX_CONNECT_PEERS:
+                len(self.peer_data) < self.max_connect_peers:
             cur_time = time.time()
             if self.last_reconnect_time is None or \
                     cur_time - self.last_reconnect_time >= Torrent.RECONNECT_TIMEOUT:
@@ -430,9 +432,9 @@ class Torrent:
         peers = list({peer for peer in peers
                       if peer not in self.client_executors and not self.download_info.is_banned(peer)})
         if force:
-            max_peers_count = Torrent.MAX_ACCEPT_PEERS
+            max_peers_count = self.max_accept_peers
         else:
-            max_peers_count = Torrent.MAX_CONNECT_PEERS
+            max_peers_count = self.max_connect_peers
         connecting_peers_count = max(max_peers_count - len(self.peer_data), 0)
         print('trying to connect {} new peers'.format(min(len(peers), connecting_peers_count)))
 
@@ -444,7 +446,7 @@ class Torrent:
         self.last_reconnect_time = time.time()
 
     def accept_client(self, peer, client):
-        if len(self.peer_data) > Torrent.MAX_ACCEPT_PEERS or self.download_info.is_banned(peer) or \
+        if len(self.peer_data) > self.max_accept_peers or self.download_info.is_banned(peer) or \
                 peer in self.client_executors:
             client.close()
             return
@@ -589,7 +591,7 @@ class Torrent:
 
             peers_unchoked_previous = peers_unchoked_current
 
-    SPEED_MEASUREMENT_PERIOD = 10
+    SPEED_MEASUREMENT_PERIOD = 60
     SPEED_UPDATE_TIMEOUT = 2
 
     async def execute_speed_measure(self):
@@ -613,7 +615,7 @@ class Torrent:
                 uploaded_queue.popleft()
 
             await asyncio.sleep(Torrent.SPEED_UPDATE_TIMEOUT)
-            return downloaded_queue
+        return downloaded_queue
 
     def shuffle_announce_tiers(self):
         for tier in self.torrent_info.announce_list:

@@ -4,14 +4,15 @@ WIDTH = 30
 INDENTATION = 4 * ' '
 PROGRESS_BAR = 50
 
-UNIT_BASE = 2 ** 20
+UNIT_BASE = 2 ** 10
 UNIT_PREFIXES = "KMG"
 
 
 def humanize_size(size):
+    print(size)
     if size < UNIT_BASE:
-        return '{} bytes'.format(size)
-    unit = int(math.floor(math.log(size, UNIT_BASE)))
+        return '{:.0f} bytes'.format(size)
+    unit = math.floor(math.log(size, UNIT_BASE))
     unit_prefix = UNIT_PREFIXES[min(unit, len(UNIT_PREFIXES))-1] + 'b'
     return '{:.1f} {}'.format(size / UNIT_BASE ** unit, unit_prefix)
 

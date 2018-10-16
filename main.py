@@ -27,7 +27,6 @@ def run_daemon(args):
         with open(STATE_FILE, 'rb') as file:
             control.load(file)
         print('state recovered')
-    print('new torrent has been successfully added')
 
     control_server = ControlServer(control)
     loop.run_until_complete(control_server.start())

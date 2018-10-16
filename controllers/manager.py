@@ -21,21 +21,26 @@ class ControlManager:
     async def start(self):
         await self.server.start()
 
-    def start_torrent_manager(self, info_hash):
+    def start_torrent_manager(self, info_hash, slow = False):
         torrent_info = self.torrents[info_hash]
 
-        manager = Torrent(torrent_info, self.peer_id, self.server.port)
+        if slow:
+            manager = Torrent(torrent_info, self.peer_id, self.server.port, 10, 10)
+        else:
+            manager = Torrent(torrent_info, self.peer_id, self.server.port)
+
         self.torrent_managers[info_hash] = manager
         self.torrent_managers_executors[info_hash] = asyncio.ensure_future(manager.run())
 
-    def add(self, torrent_info):
+    def add(self, torrent_info, slow=False):
         info_hash = torrent_info.download_info.info_hash
         if info_hash in self.torrents:
             raise ValueError('This torrent is already added')
 
         self.torrents[info_hash] = torrent_info
         if not torrent_info.paused:
-            self.start_torrent_manager(info_hash)
+            print("run with"+str(slow))
+            self.start_torrent_manager(info_hash, slow)
 
     def resume(self, info_hash):
         if info_hash not in self.torrents:
@@ -47,13 +52,23 @@ class ControlManager:
         torrent_info.paused = False
 
     async def priority(self, info_hash):
-        if info_hash not in self.torrents:
-            raise ValueError('Torrent not found')
-        for _, torrent_info in self.torrents.items():
-            info = torrent_info.download_info.info_hash
-            if not torrent_info.paused:
-                await self.pause(info)
-        self.resume(info_hash)
+        torrent_list = []
+        torrents = dict(self.torrents)
+
+        for manager, torrent_info in torrents.items():
+            torrent_info = copy.copy(torrent_info)
+            torrent_info.download_info = copy.copy(torrent_info.download_info)
+            torrent_info.download_info.reset_run_state()
+            torrent_list.append(torrent_info)
+            await self.remove(torrent_info.download_info.info_hash)
+
+        await asyncio.sleep(1)
+        for torrent_info in torrent_list:
+            if torrent_info.download_info.info_hash != info_hash:
+                self.add(torrent_info, True)
+            else:
+                self.add(torrent_info)
+
 
     async def stop_torrent_manager(self, info_hash):
         manager_executor = self.torrent_managers_executors[info_hash]
