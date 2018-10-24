@@ -33,10 +33,6 @@ def pack(*data):
     return struct.pack(format, *values)
 
 
-def humanize_size(size):
-    return '{:.1f} Mb'.format(size / UDPTracker.BPMb)
-
-
 class DatagramProtocol:
     def __init__(self):
         self._buffer = bytearray()

@@ -3,7 +3,9 @@ import re
 import sys
 import asyncio
 import argparse
-import formatter
+import time
+
+import torrent_formatter
 
 from functools import partial
 from controllers.client import ControlClient
@@ -46,8 +48,8 @@ def run_daemon(args):
 
 def show_torrent_handler(args):
     torrent_info = TorrentInfo.get_info(args.filename, download_dir=None)
-    content = formatter.join(
-        formatter.title_format(torrent_info) + formatter.content_format(torrent_info))
+    content = torrent_formatter.join(
+        torrent_formatter.title_format(torrent_info) + torrent_formatter.content_format(torrent_info))
     print(content, end='')
 
 
@@ -96,14 +98,17 @@ def status_server_handler(manager):
 
     torrents.sort(key=lambda info: info.download_info.suggested_name)
     return '\n'.join(
-        formatter.join(
-            formatter.title_format(info) + formatter.status_format(info))
+        torrent_formatter.join(
+            torrent_formatter.title_format(info) + torrent_formatter.status_format(info))
         for info in torrents).rstrip()
 
 
 async def status_handler(args):
-    status = await delegate_to_control(status_server_handler)
-    print(status)
+    while (1):
+        status = await delegate_to_control(status_server_handler)
+        time.sleep(1)
+        os.system('cls')
+        print(status)
 
 
 def main():

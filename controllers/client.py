@@ -14,7 +14,6 @@ class ControlClient:
                 self._reader, self._writer = await asyncio.open_connection(host=ControlServer.HOST, port=port)
 
                 message = await self._reader.readexactly(len(ControlServer.HANDSHAKE_MESSAGE))
-                print(message)
                 if message != ControlServer.HANDSHAKE_MESSAGE:
                     raise ValueError('Unknown protocol')
             except Exception as e:

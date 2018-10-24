@@ -8,6 +8,8 @@ class PeerTCPServer:
     def __init__(self, peer_id, torrent_managers):
         self.peer_id = peer_id
         self.torrent_managers = torrent_managers
+        self.client = None
+        self.addr = None
 
         self.server = None
         self.port = None
@@ -15,8 +17,10 @@ class PeerTCPServer:
     async def accept(self, reader, writer):
         addr = writer.get_extra_info('peername')
         peer = Peer(addr[0], addr[1])
+        self.addr = addr
 
         client = PeerTCP(self.peer_id, peer)
+        self.client = client
 
         try:
             info_hash = await client.accept(reader, writer)

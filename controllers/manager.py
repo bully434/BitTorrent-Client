@@ -69,7 +69,6 @@ class ControlManager:
             else:
                 self.add(torrent_info)
 
-
     async def stop_torrent_manager(self, info_hash):
         manager_executor = self.torrent_managers_executors[info_hash]
         manager_executor.cancel()

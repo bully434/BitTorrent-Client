@@ -9,7 +9,6 @@ UNIT_PREFIXES = "KMG"
 
 
 def humanize_size(size):
-    print(size)
     if size < UNIT_BASE:
         return '{:.0f} bytes'.format(size)
     unit = math.floor(math.log(size, UNIT_BASE))
